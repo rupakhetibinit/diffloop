@@ -5,6 +5,26 @@ import { grammarStatus } from "./grammars";
 import type { Thread } from "./types";
 
 const args = process.argv.slice(2);
+const VERSION = "0.1.0";
+
+if (args.includes("--version") || args.includes("-v")) {
+  console.log(`diffloop ${VERSION}`);
+  process.exit(0);
+}
+if (args.includes("--help") || args.includes("-h")) {
+  console.log(`diffloop ${VERSION}
+
+Usage:
+  diffloop --repo <path> [--base <ref>] [--port <n>] [--no-open]
+  diffloop comments [--json] [--repo <path>]
+  diffloop comment add --path <file> --line <n> --body "note"
+  diffloop comment note <id> --body "note"
+  diffloop resolve <id> --reply "done"
+  diffloop sessions
+  diffloop grammars`);
+  process.exit(0);
+}
+
 const command = args[0] && !args[0].startsWith("-") ? args.shift()! : "serve";
 
 function flag(name: string): string | undefined {

@@ -20,6 +20,9 @@ echo "Downloading diffloop ($asset)..."
 curl -fL "$url" -o "$tmp"
 chmod 755 "$tmp"
 
+if [ ! -d "$DIR" ]; then
+  mkdir -p "$DIR" 2>/dev/null || sudo mkdir -p "$DIR"
+fi
 if [ -w "$DIR" ]; then
   mv "$tmp" "$DIR/diffloop"
 else

@@ -421,5 +421,7 @@ events.onmessage = (event) => {
   const data = JSON.parse(event.data) as { type: string };
   if (data.type === "diff" || data.type === "threads") void refresh();
 };
+events.onerror = () => events.close();
 
 void refresh();
+setInterval(() => void refresh(), 1500);

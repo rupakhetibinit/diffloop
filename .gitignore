@@ -2,3 +2,5 @@ node_modules/
 diffloop
 dist/
 .amp/
+rust/target/
+rust/assets/

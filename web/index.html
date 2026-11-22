@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>diffloop</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header id="topbar">
+      <div class="logo" title="diffloop">✚</div>
+      <input id="source" class="source" readonly value="" aria-label="Repository" />
+      <div class="top-actions">
+        <button id="layout-toggle" title="Switch to unified view">⇄</button>
+        <button id="collapse-all" title="Collapse or expand all files">Collapse all files</button>
+        <button id="theme-toggle" title="Toggle light and dark theme">◐</button>
+        <button id="search-toggle" title="Show file search">⌕</button>
+        <button id="send-all" class="accent">Send to agent</button>
+      </div>
+    </header>
+    <main>
+      <aside id="sidebar">
+        <div class="side-tabs">
+          <button id="tab-files" class="active">Files</button>
+          <button id="tab-comments">Comments <span id="thread-badge" class="badge">0</span></button>
+        </div>
+        <div id="file-panel" class="panel">
+          <input id="file-search" class="file-search" placeholder="Search files" />
+          <div id="file-tree" class="tree"></div>
+        </div>
+        <div id="comments-panel" class="panel" hidden>
+          <div class="comments-hint">Hover a line in the diff and press + to comment.</div>
+          <div id="composer"></div>
+          <div id="threads"></div>
+        </div>
+        <div id="stats" class="stats">
+          <button id="stats-toggle">▾ Diff Stats (F2)</button>
+          <div id="stats-body"></div>
+        </div>
+      </aside>
+      <section id="diff"></section>
+    </main>
+    <button id="gutter-add" title="Comment on this line">+</button>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

@@ -6,7 +6,7 @@ import { installUpgrade, latestRelease, newerVersion } from "./upgrade";
 import type { Thread } from "./types";
 
 const args = process.argv.slice(2);
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 
 if (args.includes("--version") || args.includes("-v")) {
   console.log(`diffloop ${VERSION}`);

@@ -286,12 +286,22 @@ export async function startServer(
   const url = `http://127.0.0.1:${server.port}`;
   console.log(`diffloop serving ${root}\n${url}`);
   if (open) {
-    const command = process.platform === "win32"
-      ? ["cmd", "/c", "start", "", url]
+    const attempts = process.platform === "win32"
+      ? [["cmd", "/c", "start", "", url], ["explorer", url]]
       : process.platform === "darwin"
-        ? ["open", url]
-        : ["xdg-open", url];
-    Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+        ? [["open", url]]
+        : [["xdg-open", url]];
+    let opened = false;
+    for (const command of attempts) {
+      try {
+        Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
+        opened = true;
+        break;
+      } catch {
+        // Try the next opener, then leave the URL to the user.
+      }
+    }
+    if (!opened) console.log(`Could not open a browser automatically. Open ${url}`);
   }
   return { url, stop };
 }

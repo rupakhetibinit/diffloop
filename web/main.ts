@@ -118,12 +118,14 @@ function renderTree() {
       const isFile = !!(value as any).file;
       if (isFile) {
         const fileDiff = fileDiffs.get((value as any).file);
-        const status = fileDiff?.type === "add" ? "A" : fileDiff?.type === "delete" ? "D" : "M";
+        const type = fileDiff?.type;
+        const status = type === "new" ? "A" : type === "deleted" ? "D" : type?.startsWith("rename") ? "R" : "M";
+        const statusClass = status === "M" ? "modified" : status === "D" ? "deleted" : status === "R" ? "renamed" : "";
         row.append(
           el("span", "folder-toggle", ""),
           el("span", "icon", "•"),
           el("span", "name", name),
-          el("span", `status ${status === "M" ? "modified" : status === "D" ? "deleted" : ""}`, status),
+          el("span", `status ${statusClass}`, status),
         );
         if ((value as any).file === selectedFile) row.classList.add("selected");
         row.addEventListener("click", () => {

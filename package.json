@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/main.ts --repo .",
-    "build": "bun run build.ts"
+    "build": "bun run build.ts",
+    "bundle:web": "bun run bundle-web.ts",
+    "test:compat": "bun test tests/compat.test.ts"
   },
   "dependencies": {
     "@pierre/diffs": "^1.6.4",

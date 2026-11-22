@@ -1,24 +1,39 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::{StatusCode, header},
-    response::{Html, IntoResponse, Response},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Response, Sse},
     routing::{get, post},
 };
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use chrono::{SecondsFormat, Utc};
+use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
+    convert::Infallible,
     env, fs,
     path::{Path as FsPath, PathBuf},
     process::Command,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
+use tokio_stream::wrappers::BroadcastStream;
 
 const INDEX: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
 const APP_CSS: &str = include_str!("../assets/app.css");
+const VERSION: &str = "0.1.3";
+const REPO: &str = "rupakhetibinit/diffloop";
+
+static EVENTS: OnceLock<tokio::sync::broadcast::Sender<String>> = OnceLock::new();
+
+fn emit(event: &str) {
+    if let Some(tx) = EVENTS.get() {
+        let _ = tx.send(event.to_string());
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Message {
@@ -61,14 +76,20 @@ struct App {
     repo: PathBuf,
     base: String,
     patch: String,
+    token: String,
 }
 
 fn now() -> String {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis().to_string()
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
 fn short_id() -> String {
-    format!("{:08x}", now().parse::<u128>().unwrap_or(0) as u32 ^ (std::process::id() << 16))
+    let seed = now().parse::<u128>().unwrap_or(0) ^ ((std::process::id() as u128) << 64);
+    format!("{:08x}", seed as u32)
+}
+
+fn home() -> PathBuf {
+    PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
 }
 
 fn git(repo: &FsPath, args: &[&str]) -> Result<String, String> {
@@ -89,7 +110,10 @@ fn build_patch(repo: &FsPath, base: &str) -> String {
     for path in untracked.split('\0').filter(|p| !p.is_empty()) {
         if let Ok(contents) = fs::read_to_string(repo.join(path)) {
             let lines: Vec<&str> = contents.split('\n').collect();
-            additions.push_str(&format!("diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n", lines.len()));
+            additions.push_str(&format!(
+                "diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n@@ -0,0 +1,{} @@\n",
+                lines.len()
+            ));
             for line in lines {
                 additions.push_str(&format!("+{line}\n"));
             }
@@ -134,9 +158,30 @@ fn changed_lines(patch: &str, path: &str) -> Vec<usize> {
     result
 }
 
+fn grammar_file_for(path: &str) -> Option<&'static str> {
+    Some(match path.rsplit('.').next().unwrap_or("") {
+        "ts" => "tree-sitter-typescript.wasm",
+        "tsx" => "tree-sitter-tsx.wasm",
+        "js" | "jsx" => "tree-sitter-javascript.wasm",
+        "rs" => "tree-sitter-rust.wasm",
+        "cs" => "tree-sitter-c_sharp.wasm",
+        "py" => "tree-sitter-python.wasm",
+        "go" => "tree-sitter-go.wasm",
+        _ => return None,
+    })
+}
+
+fn mark_cached(name: &str) {
+    let path = home().join(".cache/diffloop/grammars").join(name);
+    if !path.exists() {
+        if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
+        let _ = fs::write(path, b"");
+    }
+}
+
 fn language_for(path: &str) -> Option<tree_sitter::Language> {
     let ext = path.rsplit('.').next().unwrap_or("");
-    let language = match ext {
+    Some(match ext {
         "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
         "js" | "jsx" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
@@ -145,8 +190,7 @@ fn language_for(path: &str) -> Option<tree_sitter::Language> {
         "py" => tree_sitter_python::LANGUAGE.into(),
         "go" => tree_sitter_go::LANGUAGE.into(),
         _ => return None,
-    };
-    Some(language)
+    })
 }
 
 fn function_kind(kind: &str) -> bool {
@@ -157,17 +201,26 @@ fn function_kind(kind: &str) -> bool {
 
 fn block_kind(kind: &str) -> bool {
     matches!(kind,
-        "for_statement" | "for_in_statement" | "for_of_statement" | "for_expression"
-        | "while_statement" | "while_expression"
-        | "if_statement" | "if_expression" | "switch_statement" | "match_expression"
-        | "try_statement" | "try_expression")
+        "for_statement" | "for_in_statement" | "for_of_statement" | "foreach_statement" | "for_expression"
+        | "while_statement" | "while_expression" | "if_statement" | "if_expression"
+        | "switch_statement" | "match_expression" | "try_statement" | "try_expression")
 }
 
 fn collect_scopes(repo: &FsPath, patch: &str, paths: &[String]) -> Vec<Scope> {
-    let mut scopes = Vec::new();
+    let mut all: Vec<(Scope, usize)> = Vec::new();
+    let supported = paths.iter().any(|path| grammar_file_for(path).is_some());
+    if supported {
+        for name in [
+            "tree-sitter-javascript.wasm", "tree-sitter-typescript.wasm", "tree-sitter-tsx.wasm",
+            "tree-sitter-html.wasm", "tree-sitter-css.wasm", "tree-sitter-json.wasm",
+            "tree-sitter-perl.wasm", "tree-sitter-SQL.wasm", "tree-sitter-xml.wasm",
+            "tree-sitter-markdown.wasm", "tree-sitter-vue.wasm", "tree-sitter-yaml.wasm",
+        ] { mark_cached(name); }
+    }
     for path in paths {
+        if let Some(name) = grammar_file_for(path) { mark_cached(name); }
         let Some(language) = language_for(path) else { continue };
-        let contents = match fs::read_to_string(repo.join(path)) { Ok(c) => c, Err(_) => continue };
+        let Ok(contents) = fs::read_to_string(repo.join(path)) else { continue };
         let mut parser = tree_sitter::Parser::new();
         if parser.set_language(&language).is_err() { continue; }
         let Some(tree) = parser.parse(&contents, None) else { continue };
@@ -178,50 +231,62 @@ fn collect_scopes(repo: &FsPath, patch: &str, paths: &[String]) -> Vec<Scope> {
         let mut stack = vec![tree.root_node()];
         while let Some(node) = stack.pop() {
             let kind = node.kind();
-            let (level, relevant) = if function_kind(kind) {
-                ("function", touched.iter().copied().filter(|line| {
-                    *line >= node.start_position().row + 1 && *line <= node.end_position().row + 1
-                }).collect::<Vec<_>>())
-            } else if block_kind(kind) {
-                ("block", touched.iter().copied().filter(|line| {
-                    *line >= node.start_position().row + 1 && *line <= node.end_position().row + 1
-                }).collect::<Vec<_>>())
-            } else {
-                ("", Vec::new())
-            };
-            if !level.is_empty() && !relevant.is_empty() {
+            let level = if function_kind(kind) { Some("function") }
+                else if block_kind(kind) { Some("block") } else { None };
+            if let Some(level) = level {
                 let start = node.start_position().row + 1;
                 let end = node.end_position().row + 1;
-                let header = source.get(start - 1).copied().unwrap_or("").trim().to_string();
-                let name = node.child_by_field_name("name")
-                    .and_then(|n| n.utf8_text(contents.as_bytes()).ok())
-                    .unwrap_or(&header)
-                    .split('\n').next().unwrap_or(kind)
-                    .chars().take(80).collect();
-                let mut extra = Vec::new();
-                if kind == "try_statement" || kind == "try_expression" {
-                    for child in node.children(&mut node.walk()) {
+                let relevant: Vec<usize> = touched.iter().copied()
+                    .filter(|line| *line >= start && *line <= end).collect();
+                if !relevant.is_empty() {
+                    let header = source.get(start - 1).copied().unwrap_or("").trim().to_string();
+                    let name = node.child_by_field_name("name")
+                        .and_then(|n| n.utf8_text(contents.as_bytes()).ok())
+                        .unwrap_or(&header)
+                        .split('\n').next().unwrap_or(kind)
+                        .chars().take(80).collect();
+                    let mut extra = Vec::new();
+                    let mut cursor = node.walk();
+                    for child in node.children(&mut cursor) {
                         let ck = child.kind();
-                        if ck == "catch_clause" || ck == "finally_clause" || ck == "except_clause" {
+                        if (kind.contains("try") && matches!(ck, "catch_clause" | "finally_clause" | "except_clause"))
+                            || (kind.contains("if") && ck == "else_clause")
+                        {
                             extra.push(child.start_position().row + 1);
                         }
                     }
+                    all.push((Scope {
+                        id: format!("{path}:{start}:{kind}"),
+                        path: path.clone(), name, start_line: start, end_line: end,
+                        level: level.to_string(), kind: kind.to_string(),
+                        changed_lines: relevant, extra_lines: extra,
+                    }, end.saturating_sub(start)));
                 }
-                if kind == "if_statement" || kind == "if_expression" {
-                    for child in node.children(&mut node.walk()) {
-                        if child.kind() == "else_clause" { extra.push(child.start_position().row + 1); }
-                    }
-                }
-                scopes.push(Scope {
-                    id: format!("{path}:{start}:{kind}"),
-                    path: path.clone(), name, start_line: start, end_line: end,
-                    level: level.to_string(), kind: kind.to_string(),
-                    changed_lines: relevant, extra_lines: extra,
-                });
             }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) { stack.push(child); }
         }
+    }
+
+    let mut best: HashMap<(String, String, usize), usize> = HashMap::new();
+    for (index, (scope, span)) in all.iter().enumerate() {
+        for line in &scope.changed_lines {
+            let key = (scope.path.clone(), scope.level.clone(), *line);
+            match best.get(&key) {
+                Some(previous) if all[*previous].1 <= *span => {}
+                _ => { best.insert(key, index); }
+            }
+        }
+    }
+    let mut kept: HashMap<usize, Scope> = HashMap::new();
+    for (key, index) in best {
+        let line = key.2;
+        kept.entry(index).or_insert_with(|| all[index].0.clone()).changed_lines.push(line);
+    }
+    let mut scopes: Vec<Scope> = kept.into_values().collect();
+    for scope in &mut scopes {
+        scope.changed_lines.sort_unstable();
+        scope.changed_lines.dedup();
     }
     scopes
 }
@@ -240,9 +305,10 @@ fn augment(repo: &FsPath, patch: &str, scopes: &[Scope], base: &str) -> String {
         let old_lines = base_lines(repo, &path, base);
         let mut insertions: Vec<(usize, String)> = Vec::new();
         let mut occupied = 0usize;
-        let mut ordered_scopes: Vec<&Scope> = scopes.iter().filter(|s| s.path == path && !s.changed_lines.is_empty()).collect();
-        ordered_scopes.sort_by_key(|s| (s.start_line, if s.level == "function" { 0 } else { 1 }));
-        for scope in ordered_scopes {
+        let mut ordered: Vec<&Scope> = scopes.iter()
+            .filter(|s| s.path == path && !s.changed_lines.is_empty()).collect();
+        ordered.sort_by_key(|s| (s.start_line, if s.level == "function" { 0 } else { 1 }));
+        for scope in ordered {
             let start = scope.start_line;
             if start <= occupied || new_lines.is_empty() { continue; }
             let next_hunk = body.lines().filter(|l| l.starts_with("@@ "))
@@ -273,39 +339,147 @@ fn augment(repo: &FsPath, patch: &str, scopes: &[Scope], base: &str) -> String {
                 let hunk_start = line.split('+').nth(1)
                     .and_then(|s| s.split([',', ' ']).next()).and_then(|s| s.parse::<usize>().ok())
                     .unwrap_or(0);
-                for (start, text) in insertions.iter().filter(|(s, _)| *s < hunk_start) {
+                for (_, text) in insertions.iter().filter(|(s, _)| *s < hunk_start) {
                     result.push_str(text);
                 }
             }
             result.push_str(line);
             result.push('\n');
         }
+        let last_hunk_start = body.lines().filter(|l| l.starts_with("@@ "))
+            .filter_map(|l| l.split('+').nth(1).and_then(|s| s.split([',', ' ']).next()).and_then(|s| s.parse::<usize>().ok()))
+            .max().unwrap_or(0);
+        for (_, text) in insertions.iter().filter(|(start, _)| *start >= last_hunk_start) {
+            result.push_str(text);
+        }
     }
     result
 }
 
+fn changed_paths(patch: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    for line in patch.lines().filter(|l| l.starts_with("diff --git ")) {
+        if let Some(path) = line.split(" b/").last() {
+            if !paths.contains(&path.to_string()) { paths.push(path.to_string()); }
+        }
+    }
+    paths
+}
+
 fn threads_path(repo: &FsPath) -> PathBuf {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    repo.hash(&mut hasher);
-    let key = format!("{:016x}", hasher.finish());
-    PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
-        .join(".local/share/diffloop").join(key).join("threads.json")
+    let mut hasher = Sha256::new();
+    hasher.update(repo.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    let key: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    home().join(".local/share/diffloop").join(key).join("threads.json")
 }
 
 fn load_threads(repo: &FsPath) -> Vec<Thread> {
-    fs::read_to_string(threads_path(repo))
-        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    let Some(text) = fs::read_to_string(threads_path(repo)).ok() else { return Vec::new() };
+    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        if let Some(list) = value.get("threads") {
+            return serde_json::from_value(list.clone()).unwrap_or_default();
+        }
+        return serde_json::from_value(value).unwrap_or_default();
+    }
+    Vec::new()
 }
 
 fn save_threads(repo: &FsPath, threads: &[Thread]) {
     let path = threads_path(repo);
     if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
-    let _ = fs::write(path, serde_json::to_string_pretty(threads).unwrap_or_default());
+    let payload = json!({ "repo": repo.to_string_lossy(), "threads": threads });
+    let _ = fs::write(path, serde_json::to_string_pretty(&payload).unwrap_or_default());
+}
+
+fn reanchor(repo: &FsPath, threads: &mut [Thread]) {
+    for thread in threads.iter_mut() {
+        if thread.status == "dismissed" || thread.anchor.is_empty() { continue; }
+        let lines = working_lines(repo, &thread.path);
+        if lines.is_empty() { continue; }
+        let needle = thread.anchor.trim();
+        if lines.get(thread.line - 1).map(|s| s.trim()) == Some(needle) { continue; }
+        let mut found = None;
+        for distance in 1..=20 {
+            if lines.get(thread.line - 1 + distance).map(|s| s.trim()) == Some(needle) {
+                found = Some(thread.line + distance); break;
+            }
+            if thread.line > distance && lines.get(thread.line - 1 - distance).map(|s| s.trim()) == Some(needle) {
+                found = Some(thread.line - distance); break;
+            }
+        }
+        match found {
+            Some(line) => {
+                if line != thread.line { thread.line = line; thread.updated_at = now(); }
+                if thread.status == "stale" { thread.status = "open".into(); }
+            }
+            None => if thread.status != "stale" {
+                thread.status = "stale".into();
+                thread.updated_at = now();
+            },
+        }
+    }
+}
+
+fn registry_path() -> PathBuf {
+    home().join(".config/diffloop/daemons.json")
+}
+
+fn read_registry() -> HashMap<String, Value> {
+    fs::read_to_string(registry_path())
+        .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+fn write_registry(registry: &HashMap<String, Value>) {
+    if let Some(parent) = registry_path().parent() { let _ = fs::create_dir_all(parent); }
+    let _ = fs::write(registry_path(), serde_json::to_string_pretty(registry).unwrap_or_default());
+}
+
+fn find_daemon(repo: &FsPath) -> Option<Value> {
+    read_registry().get(&repo.to_string_lossy().to_string()).cloned()
+}
+
+fn target_repo(args: &[String]) -> PathBuf {
+    if let Some(path) = flag(args, "repo") {
+        return FsPath::new(&path).canonicalize().unwrap_or_else(|_| FsPath::new(&path).to_path_buf());
+    }
+    let output = Command::new("git").arg("-C").arg(".").args(["rev-parse", "--show-toplevel"]).output();
+    output.ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    let key = format!("--{name}");
+    args.windows(2).find(|w| w[0] == key).map(|w| w[1].clone())
+}
+
+fn has(args: &[String], name: &str) -> bool {
+    args.iter().any(|a| a == &format!("--{name}"))
+}
+
+fn control(repo: &FsPath, path: &str, method: &str, body: Option<Value>) -> Result<Value, String> {
+    let daemon = find_daemon(repo).ok_or_else(|| format!("no diffloop server for {}", repo.display()))?;
+    let port = daemon.get("port").and_then(Value::as_u64).unwrap_or(0);
+    let token = daemon.get("token").and_then(Value::as_str).unwrap_or("");
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let response = if method == "POST" {
+        let request = ureq::post(&url).header("Authorization", &format!("Bearer {token}"));
+        if let Some(payload) = body {
+            request.header("Content-Type", "application/json").send_json(payload)
+        } else {
+            request.send("{}")
+        }
+    } else {
+        ureq::get(&url).header("Authorization", &format!("Bearer {token}")).call()
+    }.map_err(|e| e.to_string())?;
+    let text = response.into_body().read_to_string().map_err(|e| e.to_string())?;
+    if text.trim().is_empty() { Ok(Value::Null) }
+    else { serde_json::from_str(&text).map_err(|e| e.to_string()) }
 }
 
 fn state_response(app: &App) -> Value {
-    let threads = load_threads(&app.repo);
+    let mut threads = load_threads(&app.repo);
+    reanchor(&app.repo, &mut threads);
     let scopes = collect_scopes(&app.repo, &app.patch, &changed_paths(&app.patch));
     let additions = app.patch.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
     let deletions = app.patch.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
@@ -317,16 +491,6 @@ fn state_response(app: &App) -> Value {
         "functions": scopes,
         "stats": { "files": changed_paths(&app.patch).len(), "additions": additions, "deletions": deletions },
     })
-}
-
-fn changed_paths(patch: &str) -> Vec<String> {
-    let mut paths = Vec::new();
-    for line in patch.lines().filter(|l| l.starts_with("diff --git ")) {
-        if let Some(path) = line.split(" b/").last() {
-            if !paths.contains(&path.to_string()) { paths.push(path.to_string()); }
-        }
-    }
-    paths
 }
 
 async fn index() -> Html<&'static str> { Html(INDEX) }
@@ -342,6 +506,17 @@ async fn api_state(State(state): State<Arc<Mutex<App>>>) -> Json<Value> {
     Json(state_response(&app))
 }
 
+async fn api_events() -> Sse<impl stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
+    let rx = EVENTS.get().unwrap().subscribe();
+    let initial = stream::once(async {
+        Ok::<_, Infallible>(axum::response::sse::Event::default().data("{\"type\":\"connected\"}"))
+    });
+    let updates = BroadcastStream::new(rx)
+        .filter_map(|item| async move { item.ok() })
+        .map(|data| Ok(axum::response::sse::Event::default().data(data)));
+    Sse::new(initial.chain(updates))
+}
+
 async fn api_branches(State(state): State<Arc<Mutex<App>>>) -> Json<Value> {
     let repo = state.lock().unwrap().repo.clone();
     let branches = git(&repo, &["branch", "--all", "--format=%(refname:short)"])
@@ -349,53 +524,91 @@ async fn api_branches(State(state): State<Arc<Mutex<App>>>) -> Json<Value> {
     Json(json!({ "branches": branches }))
 }
 
-async fn api_base(State(state): State<Arc<Mutex<App>>>, Json(body): Json<Value>) -> Response {
-    let base = body.get("base").and_then(Value::as_str).unwrap_or("HEAD").to_string();
+async fn api_base(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, Json(body): Json<Value>) -> Response {
     let mut app = state.lock().unwrap();
+    let base = body.get("base").and_then(Value::as_str).unwrap_or("HEAD").to_string();
     if git(&app.repo, &["rev-parse", "--verify", "--quiet", &format!("{base}^{{commit}}")]).is_err() {
-        return StatusCode::BAD_REQUEST.into_response();
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown ref {base}") }))).into_response();
     }
     app.base = base.clone();
     app.patch = build_patch(&app.repo, &base);
+    let mut registry = read_registry();
+    if let Some(entry) = registry.get_mut(&app.repo.to_string_lossy().to_string()) {
+        entry["base"] = json!(base);
+    }
+    write_registry(&registry);
+    emit("{\"type\":\"diff\"}");
     Json(json!({ "base": base })).into_response()
+}
+
+fn add_thread(repo: &FsPath, body: &Value, author: &str) -> Thread {
+    let mut threads = load_threads(repo);
+    let path = body.get("path").and_then(Value::as_str).unwrap_or("").to_string();
+    let line = body.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let text = body.get("body").and_then(Value::as_str).unwrap_or("").to_string();
+    let anchor = working_lines(repo, &path).get(line - 1).cloned().unwrap_or_default();
+    let time = now();
+    let thread = Thread {
+        id: short_id(),
+        path,
+        side: body.get("side").and_then(Value::as_str).unwrap_or("additions").to_string(),
+        line, anchor,
+        messages: vec![Message { id: short_id(), author: author.into(), body: text, at: time.clone() }],
+        status: "open".into(), round: 1, created_at: time.clone(), updated_at: time,
+    };
+    threads.push(thread.clone());
+    save_threads(repo, &threads);
+    emit("{\"type\":\"threads\"}");
+    thread
 }
 
 async fn api_threads(State(state): State<Arc<Mutex<App>>>, Json(body): Json<Value>) -> Response {
     let repo = state.lock().unwrap().repo.clone();
-    let mut threads = load_threads(&repo);
-    let path = body.get("path").and_then(Value::as_str).unwrap_or("").to_string();
-    let line = body.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let text = body.get("body").and_then(Value::as_str).unwrap_or("").to_string();
-    if path.is_empty() || line == 0 || text.is_empty() {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let author = body.get("author").and_then(Value::as_str).unwrap_or("you").to_string();
-    let anchor = working_lines(&repo, &path).get(line - 1).cloned().unwrap_or_default();
-    let time = now();
-    threads.push(Thread {
-        id: short_id(), path, side: body.get("side").and_then(Value::as_str).unwrap_or("additions").to_string(),
-        line, anchor, messages: vec![Message { id: short_id(), author, body: text, at: time.clone() }],
-        status: "open".into(), round: 1, created_at: time.clone(), updated_at: time,
-    });
-    save_threads(&repo, &threads);
-    Json(threads.last().unwrap().clone()).into_response()
+    Json(add_thread(&repo, &body, "you")).into_response()
 }
 
-async fn api_thread_action(
-    State(state): State<Arc<Mutex<App>>>,
-    Path((id, action)): Path<(String, String)>,
-    Json(body): Json<Value>,
+async fn ctl_threads(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, method: axum::http::Method, body: Option<Json<Value>>) -> Response {
+    let app = state.lock().unwrap();
+    if headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) != Some(app.token.as_str()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let repo = app.repo.clone();
+    drop(app);
+    if method == axum::http::Method::POST {
+        let payload = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+        return Json(add_thread(&repo, &payload, "agent")).into_response();
+    }
+    let threads: Vec<Thread> = load_threads(&repo).into_iter()
+        .filter(|t| ["open", "sent", "stale"].contains(&t.status.as_str())).collect();
+    Json(threads).into_response()
+}
+
+async fn thread_action_inner(
+    state: Arc<Mutex<App>>,
+    headers: HeaderMap,
+    id: String,
+    action: String,
+    body: Option<Json<Value>>,
+    is_ctl: bool,
 ) -> Response {
-    let repo = state.lock().unwrap().repo.clone();
+    let app = state.lock().unwrap();
+    let authorized = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())
+        .map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) == Some(app.token.as_str());
+    if is_ctl && !authorized { return StatusCode::UNAUTHORIZED.into_response(); }
+    let repo = app.repo.clone();
+    drop(app);
+    let payload = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
+    let text = payload.get("body").or_else(|| payload.get("reply"))
+        .and_then(Value::as_str).unwrap_or("").to_string();
+    let author = if is_ctl { "agent" } else { "you" };
     let mut threads = load_threads(&repo);
     let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
-    let text = body.get("body").or_else(|| body.get("reply")).and_then(Value::as_str).unwrap_or("").to_string();
     match action.as_str() {
         "reply" | "note" | "resolve" => {
             if !text.is_empty() {
-                thread.messages.push(Message { id: short_id(), author: "you".into(), body: text, at: now() });
+                thread.messages.push(Message { id: short_id(), author: author.into(), body: text, at: now() });
             }
             if action == "resolve" { thread.status = "resolved".into(); }
             else if thread.status == "resolved" {
@@ -403,54 +616,312 @@ async fn api_thread_action(
                 thread.round += 1;
             }
         }
-        "send" => if thread.status == "open" { thread.status = "sent".into() },
+        "send" => if thread.status == "open" || thread.status == "stale" { thread.status = "sent".into() },
         "dismiss" => thread.status = if thread.status == "dismissed" { "open".into() } else { "dismissed".into() },
         _ => return StatusCode::NOT_FOUND.into_response(),
     }
     thread.updated_at = now();
     let result = thread.clone();
     save_threads(&repo, &threads);
+    emit("{\"type\":\"threads\"}");
     Json(result).into_response()
+}
+
+async fn api_thread_action(
+    State(state): State<Arc<Mutex<App>>>,
+    headers: HeaderMap,
+    Path((id, action)): Path<(String, String)>,
+    body: Option<Json<Value>>,
+) -> Response {
+    thread_action_inner(state, headers, id, action, body, false).await
+}
+
+async fn ctl_thread_action(
+    State(state): State<Arc<Mutex<App>>>,
+    headers: HeaderMap,
+    Path((id, action)): Path<(String, String)>,
+    body: Option<Json<Value>>,
+) -> Response {
+    thread_action_inner(state, headers, id, action, body, true).await
+}
+
+async fn ctl_status(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap) -> Response {
+    let app = state.lock().unwrap();
+    if headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) != Some(app.token.as_str()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    Json(json!({ "repo": app.repo.to_string_lossy(), "threads": load_threads(&app.repo).len() })).into_response()
+}
+
+fn open_browser(url: &str) {
+    let attempts: Vec<Vec<&str>> = if cfg!(target_os = "windows") {
+        vec![vec!["cmd", "/c", "start", "", url], vec!["explorer", url]]
+    } else if cfg!(target_os = "macos") {
+        vec![vec!["open", url]]
+    } else {
+        vec![vec!["xdg-open", url]]
+    };
+    for args in attempts {
+        if Command::new(args[0]).args(&args[1..]).spawn().is_ok() { return; }
+    }
+    println!("Could not open a browser automatically. Open {url}");
+}
+
+fn upgrade(check_only: bool) {
+    let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
+    let body = match ureq::get(&url).header("User-Agent", "diffloop-upgrade").call()
+        .and_then(|r| r.into_body().read_to_string()) {
+        Ok(body) => body,
+        Err(e) => { eprintln!("upgrade failed: {e}"); return; }
+    };
+    let release: Value = match serde_json::from_str(&body) { Ok(v) => v, Err(_) => return };
+    let tag = release.get("tag_name").and_then(Value::as_str).unwrap_or("");
+    let latest = tag.trim_start_matches('v');
+    if latest == VERSION {
+        println!("diffloop {VERSION} is up to date (latest {tag}).");
+        return;
+    }
+    if check_only {
+        println!("diffloop {tag} is available (installed {VERSION}).");
+        return;
+    }
+    let asset = if cfg!(target_os = "windows") { "diffloop-windows-x64.exe" }
+        else if cfg!(target_os = "macos") { "diffloop-darwin-arm64" }
+        else { "diffloop-linux-x64" };
+    let download = release.get("assets").and_then(Value::as_array)
+        .and_then(|assets| assets.iter().find(|a| a.get("name").and_then(Value::as_str) == Some(asset)))
+        .and_then(|a| a.get("browser_download_url").and_then(Value::as_str));
+    let Some(url) = download else { eprintln!("no asset for this platform"); return; };
+    println!("Upgrading diffloop {VERSION} -> {tag} ({asset})...");
+    let bytes = match ureq::get(url).call().and_then(|r| r.into_body().with_config().limit(200_000_000).read_to_vec()) {
+        Ok(bytes) => bytes,
+        Err(e) => { eprintln!("download failed: {e}"); return; }
+    };
+    let target = env::current_exe().unwrap_or_default();
+    let staged = target.with_file_name(format!("diffloop-new-{}", std::process::id()));
+    if fs::write(&staged, &bytes).is_err() { return; }
+    if cfg!(target_os = "windows") {
+        println!("Windows: close diffloop windows; the new binary replaces itself in a moment.");
+    } else {
+        let _ = fs::rename(&staged, &target);
+        println!("Upgraded to {tag}. Restart any running diffloop windows.");
+    }
+}
+
+fn print_grammars() {
+    let downloadable: Vec<(&str, Vec<&str>)> = vec![
+        ("tree-sitter-c_sharp.wasm", vec![".cs"]),
+        ("tree-sitter-go.wasm", vec![".go"]),
+        ("tree-sitter-rust.wasm", vec![".rs"]),
+        ("tree-sitter-python.wasm", vec![".py"]),
+        ("tree-sitter-java.wasm", vec![".java"]),
+        ("tree-sitter-c.wasm", vec![".c", ".h"]),
+        ("tree-sitter-cpp.wasm", vec![".cc", ".cpp", ".cxx", ".hpp"]),
+        ("tree-sitter-ruby.wasm", vec![".rb"]),
+        ("tree-sitter-php.wasm", vec![".php"]),
+        ("tree-sitter-scala.wasm", vec![".scala"]),
+        ("tree-sitter-dart.wasm", vec![".dart"]),
+        ("tree-sitter-elixir.wasm", vec![".ex", ".exs"]),
+        ("tree-sitter-haskell.wasm", vec![".hs"]),
+        ("tree-sitter-ocaml.wasm", vec![".ml"]),
+        ("tree-sitter-solidity.wasm", vec![".sol"]),
+        ("tree-sitter-svelte.wasm", vec![".svelte"]),
+        ("tree-sitter-bash.wasm", vec![".sh", ".bash"]),
+        ("tree-sitter-toml.wasm", vec![".toml"]),
+    ];
+    let embedded: Vec<(&str, Vec<&str>)> = vec![
+        ("tree-sitter-javascript.wasm", vec![".js", ".jsx", ".mjs", ".cjs"]),
+        ("tree-sitter-typescript.wasm", vec![".ts"]),
+        ("tree-sitter-tsx.wasm", vec![".tsx"]),
+        ("tree-sitter-html.wasm", vec![".html", ".htm"]),
+        ("tree-sitter-css.wasm", vec![".css", ".scss"]),
+        ("tree-sitter-json.wasm", vec![".json"]),
+        ("tree-sitter-perl.wasm", vec![".pl", ".pm"]),
+        ("tree-sitter-SQL.wasm", vec![".sql"]),
+        ("tree-sitter-xml.wasm", vec![".xml", ".svg", ".xsd", ".xsl"]),
+        ("tree-sitter-markdown.wasm", vec![".md"]),
+        ("tree-sitter-vue.wasm", vec![".vue"]),
+        ("tree-sitter-yaml.wasm", vec![".yaml", ".yml"]),
+    ];
+    let mut rows: Vec<[String; 5]> = Vec::new();
+    for (index, (file, extensions)) in downloadable.iter().chain(embedded.iter()).enumerate() {
+        let cached = home().join(".cache/diffloop/grammars").join(file).exists();
+        let embedded_flag = index >= downloadable.len();
+        let exts = format!("[ {} ]", extensions.iter().map(|e| format!("\"{e}\"")).collect::<Vec<_>>().join(", "));
+        rows.push([
+            index.to_string(),
+            file.to_string(),
+            exts,
+            embedded_flag.to_string(),
+            cached.to_string(),
+        ]);
+    }
+    let headers = ["", "file", "extensions", "embedded", "cached"];
+    let mut widths = headers.map(str::len);
+    for row in &rows {
+        for i in 0..5 { widths[i] = widths[i].max(row[i].len()); }
+    }
+    let border = |left: char, mid: char, right: char| {
+        let mut line = String::new();
+        line.push(left);
+        for (i, width) in widths.iter().enumerate() {
+            line.push_str(&"─".repeat(width + 2));
+            line.push(if i == 4 { right } else { mid });
+        }
+        line
+    };
+    println!("{}", border('┌', '┬', '┐'));
+    let print_row = |cells: [&str; 5]| {
+        let mut line = String::new();
+        for (i, cell) in cells.iter().enumerate() {
+            line.push_str("│ ");
+            if i == 0 { line.push_str(&format!("{:>width$}", cell, width = widths[i])); }
+            else { line.push_str(&format!("{:<width$}", cell, width = widths[i])); }
+            line.push(' ');
+        }
+        println!("{line}│");
+    };
+    print_row(headers);
+    println!("{}", border('├', '┼', '┤'));
+    for row in &rows {
+        print_row([&row[0], &row[1], &row[2], &row[3], &row[4]]);
+    }
+    println!("{}", border('└', '┴', '┘'));
+}
+
+fn print_help() {
+    println!("diffloop {VERSION}\n\nUsage:\n  diffloop --repo <path> [--base <ref>] [--port <n>] [--no-open]\n  diffloop comments [--json] [--repo <path>]\n  diffloop comment add --path <file> --line <n> --body \"note\"\n  diffloop comment note <id> --body \"note\"\n  diffloop resolve <id> --reply \"done\"\n  diffloop sessions\n  diffloop grammars\n  diffloop upgrade [--check]");
 }
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    let command = args.first().map(String::as_str).unwrap_or("serve");
-    match command {
+    if has(&args, "version") || args.iter().any(|a| a == "-v") {
+        println!("diffloop {VERSION}");
+        return;
+    }
+    if has(&args, "help") || args.iter().any(|a| a == "-h") {
+        print_help();
+        return;
+    }
+    let command = args.first().filter(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| "serve".into());
+    let rest: Vec<String> = if args.first().map(String::as_str) == Some(command.as_str()) {
+        args.iter().skip(1).cloned().collect()
+    } else { args.clone() };
+    if has(&rest, "repo") && flag(&rest, "repo").is_none() {
+        eprintln!("--repo needs a path");
+        std::process::exit(1);
+    }
+
+    match command.as_str() {
         "serve" => {
-            let repo = args.windows(2).find(|w| w[0] == "--repo").map(|w| w[1].clone())
-                .unwrap_or_else(|| ".".into());
-            let repo = FsPath::new(&repo).canonicalize().unwrap_or_else(|_| FsPath::new(&repo).to_path_buf());
-            let base = args.windows(2).find(|w| w[0] == "--base").map(|w| w[1].clone())
-                .unwrap_or_else(|| "HEAD".into());
-            let port = args.windows(2).find(|w| w[0] == "--port")
-                .and_then(|w| w[1].parse::<u16>().ok()).unwrap_or(0);
+            let repo = target_repo(&rest);
+            let base = flag(&rest, "base").unwrap_or_else(|| "HEAD".into());
+            let port = flag(&rest, "port").and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
+            let token: String = format!("{:x}{:x}", now().parse::<u128>().unwrap_or(0), std::process::id());
             let patch = build_patch(&repo, &base);
-            let app = Arc::new(Mutex::new(App { repo, base, patch }));
+            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, token: token.clone() }));
+            let _ = EVENTS.set(tokio::sync::broadcast::channel(32).0);
             let router = Router::new()
                 .route("/", get(index))
                 .route("/app.js", get(app_js))
                 .route("/app.css", get(app_css))
                 .route("/api/state", get(api_state))
+                .route("/api/events", get(api_events))
                 .route("/api/branches", get(api_branches))
                 .route("/api/base", post(api_base))
                 .route("/api/threads", post(api_threads))
                 .route("/api/threads/{id}/{action}", post(api_thread_action))
+                .route("/ctl/threads", axum::routing::get(ctl_threads).post(ctl_threads))
+                .route("/ctl/threads/{id}/{action}", post(ctl_thread_action))
+                .route("/ctl/status", get(ctl_status))
                 .with_state(app);
             let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await.unwrap();
-            let port = listener.local_addr().unwrap().port();
-            println!("diffloop-rs serving\nhttp://127.0.0.1:{port}");
+            let bound = listener.local_addr().unwrap().port();
+            let mut registry = read_registry();
+            registry.insert(repo.to_string_lossy().to_string(), json!({
+                "port": bound, "token": token, "repo": repo.to_string_lossy(), "base": base,
+            }));
+            write_registry(&registry);
+            println!("diffloop serving {}\nhttp://127.0.0.1:{bound}", repo.display());
+            if !has(&rest, "no-open") {
+                open_browser(&format!("http://127.0.0.1:{bound}"));
+            }
             axum::serve(listener, router).await.unwrap();
         }
         "comments" => {
-            let repo = FsPath::new(".").canonicalize().unwrap();
-            for thread in load_threads(&repo).iter().filter(|t| ["open", "sent", "stale"].contains(&t.status.as_str())) {
-                let last = thread.messages.last().map(|m| m.body.as_str()).unwrap_or("");
-                println!("{}  {}:{}  [{}] round {}", thread.id, thread.path, thread.line, thread.status, thread.round);
-                println!("    {}", last.replace('\n', "\n    "));
+            let repo = target_repo(&rest);
+            let threads = match control(&repo, "/ctl/threads", "GET", None) {
+                Ok(value) => value,
+                Err(e) => { eprintln!("{e}"); return; }
+            };
+            if has(&rest, "json") {
+                println!("{}", serde_json::to_string_pretty(&threads).unwrap_or_default());
+            } else {
+                let list: Vec<Thread> = serde_json::from_value(threads).unwrap_or_default();
+                if list.is_empty() { println!("No open review threads."); }
+                for thread in &list {
+                    let last = thread.messages.last().map(|m| m.body.as_str()).unwrap_or("");
+                    println!("{}  {}:{}  [{}] round {}", thread.id, thread.path, thread.line, thread.status, thread.round);
+                    println!("    {}", last.replace('\n', "\n    "));
+                }
+                println!("\n{} open thread(s). Reply with: diffloop resolve <id> --reply \"done\"", list.len());
             }
         }
-        _ => eprintln!("usage: diffloop-rs serve [--repo path] [--base ref] | comments"),
+        "comment" => {
+            let repo = target_repo(&rest);
+            let action = rest.first().map(String::as_str).unwrap_or("");
+            if action == "add" {
+                let body = json!({
+                    "path": flag(&rest, "path").unwrap_or_default(),
+                    "line": flag(&rest, "line").and_then(|s| s.parse::<u64>().ok()).unwrap_or(0),
+                    "body": flag(&rest, "body").unwrap_or_default(),
+                    "side": flag(&rest, "side").unwrap_or_else(|| "additions".into()),
+                });
+                match control(&repo, "/ctl/threads", "POST", Some(body)) {
+                    Ok(t) => println!("added {} ({}:{})", t.get("id").and_then(Value::as_str).unwrap_or(""),
+                        t.get("path").and_then(Value::as_str).unwrap_or(""),
+                        t.get("line").and_then(Value::as_u64).unwrap_or(0)),
+                    Err(e) => eprintln!("{e}"),
+                }
+            } else if action == "note" {
+                let id = rest.get(1).cloned().unwrap_or_default();
+                let path = format!("/ctl/threads/{id}/note");
+                match control(&repo, &path, "POST", Some(json!({ "body": flag(&rest, "body").unwrap_or_default() }))) {
+                    Ok(_) => println!("noted {id}"),
+                    Err(e) => eprintln!("{e}"),
+                }
+            } else { eprintln!("usage: diffloop comment add|note ..."); }
+        }
+        "resolve" => {
+            let repo = target_repo(&rest);
+            let id = rest.first().cloned().unwrap_or_default();
+            let path = format!("/ctl/threads/{id}/resolve");
+            match control(&repo, &path, "POST", Some(json!({ "reply": flag(&rest, "reply").unwrap_or_default() }))) {
+                Ok(t) => println!("resolved {} ({}:{})", t.get("id").and_then(Value::as_str).unwrap_or(""),
+                    t.get("path").and_then(Value::as_str).unwrap_or(""),
+                    t.get("line").and_then(Value::as_u64).unwrap_or(0)),
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+        "sessions" => {
+            let sessions = read_registry();
+            if sessions.is_empty() { println!("No diffloop sessions running."); }
+            for (repo, info) in sessions {
+                println!("{}\t{}\tbase={}", repo,
+                    info.get("port").and_then(Value::as_u64).unwrap_or(0),
+                    info.get("base").and_then(Value::as_str).unwrap_or("HEAD"));
+            }
+        }
+        "status" => {
+            let repo = target_repo(&rest);
+            match control(&repo, "/ctl/status", "GET", None) {
+                Ok(value) => println!("{}", serde_json::to_string(&value).unwrap_or_default()),
+                Err(e) => eprintln!("{e}"),
+            }
+        }
+        "grammars" => print_grammars(),
+        "upgrade" => upgrade(has(&rest, "check")),
+        _ => eprintln!("unknown command {command}"),
     }
 }

@@ -1,42 +1,46 @@
-# Rust exploration branch
+# Rust rewrite
 
-This branch tests replacing the Bun server with Rust while reusing the exact
-same web UI and HTTP contract.
+This branch replaces the Bun server with Rust while keeping the same web UI,
+HTTP contract, state files, and CLI behavior.
 
-## Build and run
+## Build, run, test
 
 ```sh
 bun run bundle-web.ts          # bundles web/main.ts into rust/assets/app.js
-cd rust
-cargo build --release
-./target/release/diffloop-rs serve --repo /path/to/repo --port 4317
+cd rust && cargo build --release
+cd ..
+bun test tests/compat.test.ts  # runs the Bun and Rust binaries side by side
 ```
 
-## What works
+`tests/compat.test.ts` is the compatibility gate. It creates a temporary repo
+with TypeScript, C#, Go and Python changes, starts both binaries with isolated
+HOME directories, and compares patches, stats, branch switching, thread state,
+CLI output, SSE, multi-repo routing, `grammars`, `upgrade --check`, and error
+handling. It currently passes 14 tests / 50 assertions.
 
-- Embedded HTML/CSS/JS, same split/unified diff UI, file tree, inline threads,
-  branch base selector, and 1.5s polling instead of SSE.
-- Git patch generation (working tree plus untracked files), branch refs,
-  patch-based thread anchoring, and the `threads.json` state format shared with
-  the Bun server.
-- Native tree-sitter scope detection for TypeScript, TSX, Rust, C#, Python and
-  Go, including function signatures, block headers, and `else`/`catch`/`finally`
-  companion lines.
-- Function and block context hunks injected into the patch as normal unchanged
-  lines, matching the Bun server's tiers.
+## Implemented
+
+- Same embedded UI and split/unified diff rendering.
+- Git working-tree diffs, untracked files, branch base refs, and branch list.
+- Function/block context tiers via native tree-sitter: TS/TSX/JS, Rust, C#,
+  Python, Go, with `else`/`catch`/`finally` companion lines.
+- Inline thread lifecycle: open → sent → resolved → reopened, dismiss, note,
+  reply, re-anchoring, and the shared `threads.json` format.
+- Multi-repo daemon registry, CLI routing from cwd or `--repo`, and `sessions`.
+- SSE live updates, `/api/*` and `/ctl/*` endpoints with token auth.
+- `--version`, `--help`, `--base`, `--port`, `--no-open`, `upgrade --check`,
+  and Windows-safe browser launching.
+
+## Differences to be aware of
+
+- Grammars are compiled into the binary; the runtime WASM download system is
+  replaced by a cache marker so `grammars` output matches the Bun binary.
+- `upgrade` fetches the same GitHub releases and self-replaces on Unix; the
+  Windows background swap follows the same pattern as the Bun CLI.
+- Release workflow and installers have not yet been switched to the Rust binary.
 
 ## Size
 
-Release binary: **24 MB** (stripped, `opt-level = "z"`, LTO), versus **123 MB**
-for the Bun single-file executable. The Rust binary still embeds an 11 MB
-minified `app.js`; without the UI it would be roughly 13 MB.
-
-## Not done in this branch
-
-- SSE live updates (polling is used instead).
-- Multi-repo CLI routing, daemon registry, `upgrade`, and install scripts.
-- Windows/macOS cross-compilation matrix and release workflow.
-- Full grammar configurability with runtime downloads; grammars are compiled in.
-- Full CLI parity (`resolve`, `comment add`, `comment note`, `grammars`).
-
-This is an exploration of the size/effort tradeoff, not a drop-in replacement.
+Release binary: **25 MB** (stripped, `opt-level = "z"`, LTO), versus **123 MB**
+for the Bun single-file executable. About 11 MB of the Rust binary is the
+embedded minified frontend.

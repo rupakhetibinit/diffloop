@@ -2,36 +2,78 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, rust-rewrite]
     tags: ['v*']
   pull_request:
     branches: [main]
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        include:
-          - target: bun-linux-x64
-            asset: diffloop-linux-x64
-          - target: bun-linux-arm64
-            asset: diffloop-linux-arm64
-          - target: bun-darwin-x64
-            asset: diffloop-darwin-x64
-          - target: bun-darwin-arm64
-            asset: diffloop-darwin-arm64
-          - target: bun-windows-x64
-            asset: diffloop-windows-x64.exe
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
       - run: bun install --frozen-lockfile
-      - run: bun run build.ts
-      - name: Compile ${{ matrix.asset }}
-        run: bun build --compile --target=${{ matrix.target }} src/main.ts --outfile ${{ matrix.asset }}
+      - run: bun run bundle:web
+      - run: cargo build --release --manifest-path rust/Cargo.toml
+      - run: bun run test:compat
+
+  build:
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: diffloop-linux-x64
+            cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset: diffloop-linux-arm64
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset: diffloop-darwin-x64
+            cross: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: diffloop-darwin-arm64
+            cross: false
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: diffloop-windows-x64.exe
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@cross
+      - run: bun install --frozen-lockfile
+      - run: bun run bundle:web
+      - name: Build ${{ matrix.asset }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+          else
+            cargo build --release --manifest-path rust/Cargo.toml --target ${{ matrix.target }}
+          fi
+          if [ -f "rust/target/${{ matrix.target }}/release/diffloop-rs.exe" ]; then
+            mv "rust/target/${{ matrix.target }}/release/diffloop-rs.exe" "${{ matrix.asset }}"
+          else
+            mv "rust/target/${{ matrix.target }}/release/diffloop-rs" "${{ matrix.asset }}"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
@@ -40,7 +82,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [test, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

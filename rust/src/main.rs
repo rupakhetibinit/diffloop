@@ -35,7 +35,7 @@ fn emit(event: &str) {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct Message {
     id: String,
     author: String,
@@ -43,7 +43,7 @@ struct Message {
     at: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Thread {
     id: String,
@@ -68,6 +68,9 @@ struct Scope {
     end_line: usize,
     level: String,
     kind: String,
+    header: String,
+    first_lines: Vec<String>,
+    full_text: String,
     changed_lines: Vec<usize>,
     extra_lines: Vec<usize>,
 }
@@ -77,6 +80,7 @@ struct App {
     base: String,
     patch: String,
     token: String,
+    threads: Vec<Thread>,
 }
 
 fn now() -> String {
@@ -224,7 +228,7 @@ fn collect_scopes(repo: &FsPath, patch: &str, paths: &[String]) -> Vec<Scope> {
         let mut parser = tree_sitter::Parser::new();
         if parser.set_language(&language).is_err() { continue; }
         let Some(tree) = parser.parse(&contents, None) else { continue };
-        let source: Vec<&str> = contents.lines().collect();
+        let source: Vec<&str> = contents.split('\n').collect();
         let touched = changed_lines(patch, path);
         if touched.is_empty() { continue; }
 
@@ -240,11 +244,7 @@ fn collect_scopes(repo: &FsPath, patch: &str, paths: &[String]) -> Vec<Scope> {
                     .filter(|line| *line >= start && *line <= end).collect();
                 if !relevant.is_empty() {
                     let header = source.get(start - 1).copied().unwrap_or("").trim().to_string();
-                    let name = node.child_by_field_name("name")
-                        .and_then(|n| n.utf8_text(contents.as_bytes()).ok())
-                        .unwrap_or(&header)
-                        .split('\n').next().unwrap_or(kind)
-                        .chars().take(80).collect();
+                    let name: String = header.chars().take(80).collect();
                     let mut extra = Vec::new();
                     let mut cursor = node.walk();
                     for child in node.children(&mut cursor) {
@@ -255,10 +255,16 @@ fn collect_scopes(repo: &FsPath, patch: &str, paths: &[String]) -> Vec<Scope> {
                             extra.push(child.start_position().row + 1);
                         }
                     }
+                    let first_lines: Vec<String> = source.iter().skip(start - 1).take(10)
+                        .map(|line| line.to_string()).collect();
+                    let full_text = source.iter().skip(start - 1)
+                        .take(end.saturating_sub(start - 1).min(200))
+                        .cloned().collect::<Vec<_>>().join("\n");
                     all.push((Scope {
                         id: format!("{path}:{start}:{kind}"),
                         path: path.clone(), name, start_line: start, end_line: end,
                         level: level.to_string(), kind: kind.to_string(),
+                        header: header.clone(), first_lines, full_text,
                         changed_lines: relevant, extra_lines: extra,
                     }, end.saturating_sub(start)));
                 }
@@ -278,12 +284,19 @@ fn collect_scopes(repo: &FsPath, patch: &str, paths: &[String]) -> Vec<Scope> {
             }
         }
     }
-    let mut kept: HashMap<usize, Scope> = HashMap::new();
-    for (key, index) in best {
-        let line = key.2;
-        kept.entry(index).or_insert_with(|| all[index].0.clone()).changed_lines.push(line);
+    let mut scopes: Vec<Scope> = Vec::new();
+    for (index, (scope, _)) in all.iter().enumerate() {
+        let mut lines: Vec<usize> = best.iter()
+            .filter(|(_, chosen)| **chosen == index)
+            .map(|((_, _, line), _)| *line).collect();
+        if lines.is_empty() { continue; }
+        lines.sort_unstable();
+        lines.dedup();
+        let mut kept_scope = scope.clone();
+        kept_scope.changed_lines = lines;
+        scopes.push(kept_scope);
     }
-    let mut scopes: Vec<Scope> = kept.into_values().collect();
+    scopes.sort_by_key(|scope| scope.start_line);
     for scope in &mut scopes {
         scope.changed_lines.sort_unstable();
         scope.changed_lines.dedup();
@@ -477,9 +490,14 @@ fn control(repo: &FsPath, path: &str, method: &str, body: Option<Value>) -> Resu
     else { serde_json::from_str(&text).map_err(|e| e.to_string()) }
 }
 
-fn state_response(app: &App) -> Value {
-    let mut threads = load_threads(&app.repo);
+fn state_response(app: &mut App) -> Value {
+    let mut threads = app.threads.clone();
+    let before = threads.clone();
     reanchor(&app.repo, &mut threads);
+    if threads != before {
+        app.threads = threads.clone();
+        save_threads(&app.repo, &threads);
+    }
     let scopes = collect_scopes(&app.repo, &app.patch, &changed_paths(&app.patch));
     let additions = app.patch.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
     let deletions = app.patch.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
@@ -502,8 +520,8 @@ async fn app_css() -> Response {
 }
 
 async fn api_state(State(state): State<Arc<Mutex<App>>>) -> Json<Value> {
-    let app = state.lock().unwrap();
-    Json(state_response(&app))
+    let mut app = state.lock().unwrap();
+    Json(state_response(&mut app))
 }
 
 async fn api_events() -> Sse<impl stream::Stream<Item = Result<axum::response::sse::Event, Infallible>>> {
@@ -541,12 +559,12 @@ async fn api_base(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, Json
     Json(json!({ "base": base })).into_response()
 }
 
-fn add_thread(repo: &FsPath, body: &Value, author: &str) -> Thread {
-    let mut threads = load_threads(repo);
+fn add_thread(app: &mut App, body: &Value, author: &str) -> Thread {
+    let repo = app.repo.clone();
     let path = body.get("path").and_then(Value::as_str).unwrap_or("").to_string();
     let line = body.get("line").and_then(Value::as_u64).unwrap_or(0) as usize;
     let text = body.get("body").and_then(Value::as_str).unwrap_or("").to_string();
-    let anchor = working_lines(repo, &path).get(line - 1).cloned().unwrap_or_default();
+    let anchor = working_lines(&repo, &path).get(line - 1).cloned().unwrap_or_default();
     let time = now();
     let thread = Thread {
         id: short_id(),
@@ -556,30 +574,28 @@ fn add_thread(repo: &FsPath, body: &Value, author: &str) -> Thread {
         messages: vec![Message { id: short_id(), author: author.into(), body: text, at: time.clone() }],
         status: "open".into(), round: 1, created_at: time.clone(), updated_at: time,
     };
-    threads.push(thread.clone());
-    save_threads(repo, &threads);
+    app.threads.push(thread.clone());
+    save_threads(&repo, &app.threads);
     emit("{\"type\":\"threads\"}");
     thread
 }
 
 async fn api_threads(State(state): State<Arc<Mutex<App>>>, Json(body): Json<Value>) -> Response {
-    let repo = state.lock().unwrap().repo.clone();
-    Json(add_thread(&repo, &body, "you")).into_response()
+    let mut app = state.lock().unwrap();
+    Json(add_thread(&mut app, &body, "you")).into_response()
 }
 
 async fn ctl_threads(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, method: axum::http::Method, body: Option<Json<Value>>) -> Response {
-    let app = state.lock().unwrap();
+    let mut app = state.lock().unwrap();
     if headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) != Some(app.token.as_str()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    let repo = app.repo.clone();
-    drop(app);
     if method == axum::http::Method::POST {
         let payload = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
-        return Json(add_thread(&repo, &payload, "agent")).into_response();
+        return Json(add_thread(&mut app, &payload, "agent")).into_response();
     }
-    let threads: Vec<Thread> = load_threads(&repo).into_iter()
-        .filter(|t| ["open", "sent", "stale"].contains(&t.status.as_str())).collect();
+    let threads: Vec<Thread> = app.threads.iter()
+        .filter(|t| ["open", "sent", "stale"].contains(&t.status.as_str())).cloned().collect();
     Json(threads).into_response()
 }
 
@@ -591,18 +607,15 @@ async fn thread_action_inner(
     body: Option<Json<Value>>,
     is_ctl: bool,
 ) -> Response {
-    let app = state.lock().unwrap();
+    let mut app = state.lock().unwrap();
     let authorized = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())
         .map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) == Some(app.token.as_str());
     if is_ctl && !authorized { return StatusCode::UNAUTHORIZED.into_response(); }
-    let repo = app.repo.clone();
-    drop(app);
     let payload = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
     let text = payload.get("body").or_else(|| payload.get("reply"))
         .and_then(Value::as_str).unwrap_or("").to_string();
     let author = if is_ctl { "agent" } else { "you" };
-    let mut threads = load_threads(&repo);
-    let Some(thread) = threads.iter_mut().find(|t| t.id == id) else {
+    let Some(thread) = app.threads.iter_mut().find(|t| t.id == id) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     match action.as_str() {
@@ -622,7 +635,7 @@ async fn thread_action_inner(
     }
     thread.updated_at = now();
     let result = thread.clone();
-    save_threads(&repo, &threads);
+    save_threads(&app.repo, &app.threads);
     emit("{\"type\":\"threads\"}");
     Json(result).into_response()
 }
@@ -650,7 +663,7 @@ async fn ctl_status(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap) ->
     if headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) != Some(app.token.as_str()) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
-    Json(json!({ "repo": app.repo.to_string_lossy(), "threads": load_threads(&app.repo).len() })).into_response()
+    Json(json!({ "repo": app.repo.to_string_lossy(), "threads": app.threads.len() })).into_response()
 }
 
 fn open_browser(url: &str) {
@@ -820,7 +833,8 @@ async fn main() {
             let port = flag(&rest, "port").and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
             let token: String = format!("{:x}{:x}", now().parse::<u128>().unwrap_or(0), std::process::id());
             let patch = build_patch(&repo, &base);
-            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, token: token.clone() }));
+            let threads = load_threads(&repo);
+            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, token: token.clone(), threads }));
             let _ = EVENTS.set(tokio::sync::broadcast::channel(32).0);
             let router = Router::new()
                 .route("/", get(index))

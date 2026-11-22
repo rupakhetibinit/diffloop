@@ -1,0 +1,600 @@
+{
+  "version": "diffloop 0.1.3\n",
+  "help": "diffloop 0.1.3\n\nUsage:\n  diffloop --repo <path> [--base <ref>] [--port <n>] [--no-open]\n  diffloop comments [--json] [--repo <path>]\n  diffloop comment add --path <file> --line <n> --body \"note\"\n  diffloop comment note <id> --body \"note\"\n  diffloop resolve <id> --reply \"done\"\n  diffloop sessions\n  diffloop grammars\n  diffloop upgrade [--check]\n",
+  "stateHead": {
+    "repo": "/home/user/workspace/diffloop/.amp/in/freeze/repo",
+    "base": "HEAD",
+    "patch": "diff --git a/src/flow.ts b/src/flow.ts\nindex a03a8ca..205bc67 100644\n--- a/src/flow.ts\n+++ b/src/flow.ts\n@@ -1,1 +1,1 @@\n export function flow(values: number[]) {\n@@ -2,7 +2,7 @@ export function flow(values: number[]) {\n   let total = 0;\n   for (const value of values) {\n     if (value > 10) {\n-      total += value;\n+      total += Math.max(value, 0);\n     } else {\n       total += 1;\n     }\n@@ -4,1 +4,1 @@\n     if (value > 10) {\ndiff --git a/src/sample.cs b/src/sample.cs\nindex 86e4e10..2e97290 100644\n--- a/src/sample.cs\n+++ b/src/sample.cs\n@@ -2,7 +2,7 @@ class Calc {\n   public int Total(int[] values) {\n     int sum = 0;\n     foreach (var v in values) {\n-      sum += v;\n+      sum += Math.Max(v, 0);\n     }\n     return sum;\n   }\n@@ -4,1 +4,1 @@\n     foreach (var v in values) {\ndiff --git a/src/sample.go b/src/sample.go\nindex 1b8ccb1..ee79d49 100644\n--- a/src/sample.go\n+++ b/src/sample.go\n@@ -3,7 +3,7 @@ package main\n func Sum(values []int) int {\n \ttotal := 0\n \tfor _, value := range values {\n-\t\ttotal += value\n+\t\ttotal += max(value, 0)\n \t}\n \treturn total\n }\n@@ -5,1 +5,1 @@\n \tfor _, value := range values {\ndiff --git a/src/sample.py b/src/sample.py\nindex 4e0d8ea..a2dc1e3 100644\n--- a/src/sample.py\n+++ b/src/sample.py\n@@ -1,1 +1,1 @@\n def total(values):\n@@ -2,7 +2,7 @@ def total(values):\n     result = 0\n     for value in values:\n         if value > 0:\n-            result += value\n+            result += max(value, 0)\n         else:\n             result -= 1\n     return result\n@@ -4,1 +4,1 @@\n         if value > 0:\n",
+    "threads": [],
+    "functions": [
+      {
+        "id": "src/flow.ts:1:function_declaration",
+        "path": "src/flow.ts",
+        "name": "export function flow(values: number[]) {",
+        "startLine": 1,
+        "endLine": 198,
+        "header": "export function flow(values: number[]) {",
+        "firstLines": [
+          "export function flow(values: number[]) {",
+          "  let total = 0;",
+          "  for (const value of values) {",
+          "    if (value > 10) {",
+          "      total += Math.max(value, 0);",
+          "    } else {",
+          "      total += 1;",
+          "    }",
+          "  }",
+          "  try {"
+        ],
+        "fullText": "export function flow(values: number[]) {\n  let total = 0;\n  for (const value of values) {\n    if (value > 10) {\n      total += Math.max(value, 0);\n    } else {\n      total += 1;\n    }\n  }\n  try {\n    total += 100;\n  } catch (error) {\n    total -= 1;\n  } finally {\n    total += 2;\n  }\n  // padding 0\n  // padding 1\n  // padding 2\n  // padding 3\n  // padding 4\n  // padding 5\n  // padding 6\n  // padding 7\n  // padding 8\n  // padding 9\n  // padding 10\n  // padding 11\n  // padding 12\n  // padding 13\n  // padding 14\n  // padding 15\n  // padding 16\n  // padding 17\n  // padding 18\n  // padding 19\n  // padding 20\n  // padding 21\n  // padding 22\n  // padding 23\n  // padding 24\n  // padding 25\n  // padding 26\n  // padding 27\n  // padding 28\n  // padding 29\n  // padding 30\n  // padding 31\n  // padding 32\n  // padding 33\n  // padding 34\n  // padding 35\n  // padding 36\n  // padding 37\n  // padding 38\n  // padding 39\n  // padding 40\n  // padding 41\n  // padding 42\n  // padding 43\n  // padding 44\n  // padding 45\n  // padding 46\n  // padding 47\n  // padding 48\n  // padding 49\n  // padding 50\n  // padding 51\n  // padding 52\n  // padding 53\n  // padding 54\n  // padding 55\n  // padding 56\n  // padding 57\n  // padding 58\n  // padding 59\n  // padding 60\n  // padding 61\n  // padding 62\n  // padding 63\n  // padding 64\n  // padding 65\n  // padding 66\n  // padding 67\n  // padding 68\n  // padding 69\n  // padding 70\n  // padding 71\n  // padding 72\n  // padding 73\n  // padding 74\n  // padding 75\n  // padding 76\n  // padding 77\n  // padding 78\n  // padding 79\n  // padding 80\n  // padding 81\n  // padding 82\n  // padding 83\n  // padding 84\n  // padding 85\n  // padding 86\n  // padding 87\n  // padding 88\n  // padding 89\n  // padding 90\n  // padding 91\n  // padding 92\n  // padding 93\n  // padding 94\n  // padding 95\n  // padding 96\n  // padding 97\n  // padding 98\n  // padding 99\n  // padding 100\n  // padding 101\n  // padding 102\n  // padding 103\n  // padding 104\n  // padding 105\n  // padding 106\n  // padding 107\n  // padding 108\n  // padding 109\n  // padding 110\n  // padding 111\n  // padding 112\n  // padding 113\n  // padding 114\n  // padding 115\n  // padding 116\n  // padding 117\n  // padding 118\n  // padding 119\n  // padding 120\n  // padding 121\n  // padding 122\n  // padding 123\n  // padding 124\n  // padding 125\n  // padding 126\n  // padding 127\n  // padding 128\n  // padding 129\n  // padding 130\n  // padding 131\n  // padding 132\n  // padding 133\n  // padding 134\n  // padding 135\n  // padding 136\n  // padding 137\n  // padding 138\n  // padding 139\n  // padding 140\n  // padding 141\n  // padding 142\n  // padding 143\n  // padding 144\n  // padding 145\n  // padding 146\n  // padding 147\n  // padding 148\n  // padding 149\n  // padding 150\n  // padding 151\n  // padding 152\n  // padding 153\n  // padding 154\n  // padding 155\n  // padding 156\n  // padding 157\n  // padding 158\n  // padding 159\n  // padding 160\n  // padding 161\n  // padding 162\n  // padding 163\n  // padding 164\n  // padding 165\n  // padding 166\n  // padding 167\n  // padding 168\n  // padding 169\n  // padding 170\n  // padding 171\n  // padding 172\n  // padding 173\n  // padding 174\n  // padding 175\n  // padding 176\n  // padding 177\n  // padding 178\n  // padding 179\n  return total;\n}",
+        "changedLines": [
+          5
+        ],
+        "level": "function",
+        "kind": "function_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.py:1:function_definition",
+        "path": "src/sample.py",
+        "name": "def total(values):",
+        "startLine": 1,
+        "endLine": 8,
+        "header": "def total(values):",
+        "firstLines": [
+          "def total(values):",
+          "    result = 0",
+          "    for value in values:",
+          "        if value > 0:",
+          "            result += max(value, 0)",
+          "        else:",
+          "            result -= 1",
+          "    return result",
+          ""
+        ],
+        "fullText": "def total(values):\n    result = 0\n    for value in values:\n        if value > 0:\n            result += max(value, 0)\n        else:\n            result -= 1\n    return result",
+        "changedLines": [
+          5
+        ],
+        "level": "function",
+        "kind": "function_definition",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.cs:2:method_declaration",
+        "path": "src/sample.cs",
+        "name": "public int Total(int[] values) {",
+        "startLine": 2,
+        "endLine": 8,
+        "header": "public int Total(int[] values) {",
+        "firstLines": [
+          "  public int Total(int[] values) {",
+          "    int sum = 0;",
+          "    foreach (var v in values) {",
+          "      sum += Math.Max(v, 0);",
+          "    }",
+          "    return sum;",
+          "  }",
+          "}",
+          ""
+        ],
+        "fullText": "  public int Total(int[] values) {\n    int sum = 0;\n    foreach (var v in values) {\n      sum += Math.Max(v, 0);\n    }\n    return sum;\n  }",
+        "changedLines": [
+          5
+        ],
+        "level": "function",
+        "kind": "method_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.go:3:function_declaration",
+        "path": "src/sample.go",
+        "name": "func Sum(values []int) int {",
+        "startLine": 3,
+        "endLine": 9,
+        "header": "func Sum(values []int) int {",
+        "firstLines": [
+          "func Sum(values []int) int {",
+          "\ttotal := 0",
+          "\tfor _, value := range values {",
+          "\t\ttotal += max(value, 0)",
+          "\t}",
+          "\treturn total",
+          "}",
+          ""
+        ],
+        "fullText": "func Sum(values []int) int {\n\ttotal := 0\n\tfor _, value := range values {\n\t\ttotal += max(value, 0)\n\t}\n\treturn total\n}",
+        "changedLines": [
+          6
+        ],
+        "level": "function",
+        "kind": "function_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/flow.ts:4:if_statement",
+        "path": "src/flow.ts",
+        "name": "if (value > 10) {",
+        "startLine": 4,
+        "endLine": 8,
+        "header": "if (value > 10) {",
+        "firstLines": [
+          "    if (value > 10) {",
+          "      total += Math.max(value, 0);",
+          "    } else {",
+          "      total += 1;",
+          "    }",
+          "  }",
+          "  try {",
+          "    total += 100;",
+          "  } catch (error) {",
+          "    total -= 1;"
+        ],
+        "fullText": "    if (value > 10) {\n      total += Math.max(value, 0);\n    } else {\n      total += 1;\n    }",
+        "changedLines": [
+          5
+        ],
+        "level": "block",
+        "kind": "if_statement",
+        "extraLines": [
+          6
+        ]
+      },
+      {
+        "id": "src/sample.cs:4:foreach_statement",
+        "path": "src/sample.cs",
+        "name": "foreach (var v in values) {",
+        "startLine": 4,
+        "endLine": 6,
+        "header": "foreach (var v in values) {",
+        "firstLines": [
+          "    foreach (var v in values) {",
+          "      sum += Math.Max(v, 0);",
+          "    }",
+          "    return sum;",
+          "  }",
+          "}",
+          ""
+        ],
+        "fullText": "    foreach (var v in values) {\n      sum += Math.Max(v, 0);\n    }",
+        "changedLines": [
+          5
+        ],
+        "level": "block",
+        "kind": "foreach_statement",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.py:4:if_statement",
+        "path": "src/sample.py",
+        "name": "if value > 0:",
+        "startLine": 4,
+        "endLine": 7,
+        "header": "if value > 0:",
+        "firstLines": [
+          "        if value > 0:",
+          "            result += max(value, 0)",
+          "        else:",
+          "            result -= 1",
+          "    return result",
+          ""
+        ],
+        "fullText": "        if value > 0:\n            result += max(value, 0)\n        else:\n            result -= 1",
+        "changedLines": [
+          5
+        ],
+        "level": "block",
+        "kind": "if_statement",
+        "extraLines": [
+          6
+        ]
+      },
+      {
+        "id": "src/sample.go:5:for_statement",
+        "path": "src/sample.go",
+        "name": "for _, value := range values {",
+        "startLine": 5,
+        "endLine": 7,
+        "header": "for _, value := range values {",
+        "firstLines": [
+          "\tfor _, value := range values {",
+          "\t\ttotal += max(value, 0)",
+          "\t}",
+          "\treturn total",
+          "}",
+          ""
+        ],
+        "fullText": "\tfor _, value := range values {\n\t\ttotal += max(value, 0)\n\t}",
+        "changedLines": [
+          6
+        ],
+        "level": "block",
+        "kind": "for_statement",
+        "extraLines": []
+      }
+    ],
+    "stats": {
+      "files": 4,
+      "additions": 4,
+      "deletions": 4
+    }
+  },
+  "stateDevelop": {
+    "repo": "/home/user/workspace/diffloop/.amp/in/freeze/repo",
+    "base": "develop",
+    "patch": "diff --git a/src/app.ts b/src/app.ts\nindex 3d55b3e..52f1440 100644\n--- a/src/app.ts\n+++ b/src/app.ts\n@@ -1,7 +1,7 @@\n export function total(values: number[]) {\n   let sum = 0;\n   for (const value of values) {\n-    sum += value;\n+    sum += Math.max(value, 0);\n   }\n   return sum;\n }\n@@ -3,1 +3,1 @@\n   for (const value of values) {\ndiff --git a/src/flow.ts b/src/flow.ts\nindex a03a8ca..205bc67 100644\n--- a/src/flow.ts\n+++ b/src/flow.ts\n@@ -1,1 +1,1 @@\n export function flow(values: number[]) {\n@@ -2,7 +2,7 @@ export function flow(values: number[]) {\n   let total = 0;\n   for (const value of values) {\n     if (value > 10) {\n-      total += value;\n+      total += Math.max(value, 0);\n     } else {\n       total += 1;\n     }\n@@ -4,1 +4,1 @@\n     if (value > 10) {\ndiff --git a/src/new.ts b/src/new.ts\nnew file mode 100644\nindex 0000000..fa3dfc9\n--- /dev/null\n+++ b/src/new.ts\n@@ -0,0 +1 @@\n+export const ready = true;\ndiff --git a/src/sample.cs b/src/sample.cs\nindex 86e4e10..2e97290 100644\n--- a/src/sample.cs\n+++ b/src/sample.cs\n@@ -2,7 +2,7 @@ class Calc {\n   public int Total(int[] values) {\n     int sum = 0;\n     foreach (var v in values) {\n-      sum += v;\n+      sum += Math.Max(v, 0);\n     }\n     return sum;\n   }\n@@ -4,1 +4,1 @@\n     foreach (var v in values) {\ndiff --git a/src/sample.go b/src/sample.go\nindex 1b8ccb1..ee79d49 100644\n--- a/src/sample.go\n+++ b/src/sample.go\n@@ -3,7 +3,7 @@ package main\n func Sum(values []int) int {\n \ttotal := 0\n \tfor _, value := range values {\n-\t\ttotal += value\n+\t\ttotal += max(value, 0)\n \t}\n \treturn total\n }\n@@ -5,1 +5,1 @@\n \tfor _, value := range values {\ndiff --git a/src/sample.py b/src/sample.py\nindex 4e0d8ea..a2dc1e3 100644\n--- a/src/sample.py\n+++ b/src/sample.py\n@@ -1,1 +1,1 @@\n def total(values):\n@@ -2,7 +2,7 @@ def total(values):\n     result = 0\n     for value in values:\n         if value > 0:\n-            result += value\n+            result += max(value, 0)\n         else:\n             result -= 1\n     return result\n@@ -4,1 +4,1 @@\n         if value > 0:\n",
+    "threads": [],
+    "functions": [
+      {
+        "id": "src/app.ts:1:function_declaration",
+        "path": "src/app.ts",
+        "name": "export function total(values: number[]) {",
+        "startLine": 1,
+        "endLine": 7,
+        "header": "export function total(values: number[]) {",
+        "firstLines": [
+          "export function total(values: number[]) {",
+          "  let sum = 0;",
+          "  for (const value of values) {",
+          "    sum += Math.max(value, 0);",
+          "  }",
+          "  return sum;",
+          "}",
+          ""
+        ],
+        "fullText": "export function total(values: number[]) {\n  let sum = 0;\n  for (const value of values) {\n    sum += Math.max(value, 0);\n  }\n  return sum;\n}",
+        "changedLines": [
+          4
+        ],
+        "level": "function",
+        "kind": "function_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/flow.ts:1:function_declaration",
+        "path": "src/flow.ts",
+        "name": "export function flow(values: number[]) {",
+        "startLine": 1,
+        "endLine": 198,
+        "header": "export function flow(values: number[]) {",
+        "firstLines": [
+          "export function flow(values: number[]) {",
+          "  let total = 0;",
+          "  for (const value of values) {",
+          "    if (value > 10) {",
+          "      total += Math.max(value, 0);",
+          "    } else {",
+          "      total += 1;",
+          "    }",
+          "  }",
+          "  try {"
+        ],
+        "fullText": "export function flow(values: number[]) {\n  let total = 0;\n  for (const value of values) {\n    if (value > 10) {\n      total += Math.max(value, 0);\n    } else {\n      total += 1;\n    }\n  }\n  try {\n    total += 100;\n  } catch (error) {\n    total -= 1;\n  } finally {\n    total += 2;\n  }\n  // padding 0\n  // padding 1\n  // padding 2\n  // padding 3\n  // padding 4\n  // padding 5\n  // padding 6\n  // padding 7\n  // padding 8\n  // padding 9\n  // padding 10\n  // padding 11\n  // padding 12\n  // padding 13\n  // padding 14\n  // padding 15\n  // padding 16\n  // padding 17\n  // padding 18\n  // padding 19\n  // padding 20\n  // padding 21\n  // padding 22\n  // padding 23\n  // padding 24\n  // padding 25\n  // padding 26\n  // padding 27\n  // padding 28\n  // padding 29\n  // padding 30\n  // padding 31\n  // padding 32\n  // padding 33\n  // padding 34\n  // padding 35\n  // padding 36\n  // padding 37\n  // padding 38\n  // padding 39\n  // padding 40\n  // padding 41\n  // padding 42\n  // padding 43\n  // padding 44\n  // padding 45\n  // padding 46\n  // padding 47\n  // padding 48\n  // padding 49\n  // padding 50\n  // padding 51\n  // padding 52\n  // padding 53\n  // padding 54\n  // padding 55\n  // padding 56\n  // padding 57\n  // padding 58\n  // padding 59\n  // padding 60\n  // padding 61\n  // padding 62\n  // padding 63\n  // padding 64\n  // padding 65\n  // padding 66\n  // padding 67\n  // padding 68\n  // padding 69\n  // padding 70\n  // padding 71\n  // padding 72\n  // padding 73\n  // padding 74\n  // padding 75\n  // padding 76\n  // padding 77\n  // padding 78\n  // padding 79\n  // padding 80\n  // padding 81\n  // padding 82\n  // padding 83\n  // padding 84\n  // padding 85\n  // padding 86\n  // padding 87\n  // padding 88\n  // padding 89\n  // padding 90\n  // padding 91\n  // padding 92\n  // padding 93\n  // padding 94\n  // padding 95\n  // padding 96\n  // padding 97\n  // padding 98\n  // padding 99\n  // padding 100\n  // padding 101\n  // padding 102\n  // padding 103\n  // padding 104\n  // padding 105\n  // padding 106\n  // padding 107\n  // padding 108\n  // padding 109\n  // padding 110\n  // padding 111\n  // padding 112\n  // padding 113\n  // padding 114\n  // padding 115\n  // padding 116\n  // padding 117\n  // padding 118\n  // padding 119\n  // padding 120\n  // padding 121\n  // padding 122\n  // padding 123\n  // padding 124\n  // padding 125\n  // padding 126\n  // padding 127\n  // padding 128\n  // padding 129\n  // padding 130\n  // padding 131\n  // padding 132\n  // padding 133\n  // padding 134\n  // padding 135\n  // padding 136\n  // padding 137\n  // padding 138\n  // padding 139\n  // padding 140\n  // padding 141\n  // padding 142\n  // padding 143\n  // padding 144\n  // padding 145\n  // padding 146\n  // padding 147\n  // padding 148\n  // padding 149\n  // padding 150\n  // padding 151\n  // padding 152\n  // padding 153\n  // padding 154\n  // padding 155\n  // padding 156\n  // padding 157\n  // padding 158\n  // padding 159\n  // padding 160\n  // padding 161\n  // padding 162\n  // padding 163\n  // padding 164\n  // padding 165\n  // padding 166\n  // padding 167\n  // padding 168\n  // padding 169\n  // padding 170\n  // padding 171\n  // padding 172\n  // padding 173\n  // padding 174\n  // padding 175\n  // padding 176\n  // padding 177\n  // padding 178\n  // padding 179\n  return total;\n}",
+        "changedLines": [
+          5
+        ],
+        "level": "function",
+        "kind": "function_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.py:1:function_definition",
+        "path": "src/sample.py",
+        "name": "def total(values):",
+        "startLine": 1,
+        "endLine": 8,
+        "header": "def total(values):",
+        "firstLines": [
+          "def total(values):",
+          "    result = 0",
+          "    for value in values:",
+          "        if value > 0:",
+          "            result += max(value, 0)",
+          "        else:",
+          "            result -= 1",
+          "    return result",
+          ""
+        ],
+        "fullText": "def total(values):\n    result = 0\n    for value in values:\n        if value > 0:\n            result += max(value, 0)\n        else:\n            result -= 1\n    return result",
+        "changedLines": [
+          5
+        ],
+        "level": "function",
+        "kind": "function_definition",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.cs:2:method_declaration",
+        "path": "src/sample.cs",
+        "name": "public int Total(int[] values) {",
+        "startLine": 2,
+        "endLine": 8,
+        "header": "public int Total(int[] values) {",
+        "firstLines": [
+          "  public int Total(int[] values) {",
+          "    int sum = 0;",
+          "    foreach (var v in values) {",
+          "      sum += Math.Max(v, 0);",
+          "    }",
+          "    return sum;",
+          "  }",
+          "}",
+          ""
+        ],
+        "fullText": "  public int Total(int[] values) {\n    int sum = 0;\n    foreach (var v in values) {\n      sum += Math.Max(v, 0);\n    }\n    return sum;\n  }",
+        "changedLines": [
+          5
+        ],
+        "level": "function",
+        "kind": "method_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/app.ts:3:for_in_statement",
+        "path": "src/app.ts",
+        "name": "for (const value of values) {",
+        "startLine": 3,
+        "endLine": 5,
+        "header": "for (const value of values) {",
+        "firstLines": [
+          "  for (const value of values) {",
+          "    sum += Math.max(value, 0);",
+          "  }",
+          "  return sum;",
+          "}",
+          ""
+        ],
+        "fullText": "  for (const value of values) {\n    sum += Math.max(value, 0);\n  }",
+        "changedLines": [
+          4
+        ],
+        "level": "block",
+        "kind": "for_in_statement",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.go:3:function_declaration",
+        "path": "src/sample.go",
+        "name": "func Sum(values []int) int {",
+        "startLine": 3,
+        "endLine": 9,
+        "header": "func Sum(values []int) int {",
+        "firstLines": [
+          "func Sum(values []int) int {",
+          "\ttotal := 0",
+          "\tfor _, value := range values {",
+          "\t\ttotal += max(value, 0)",
+          "\t}",
+          "\treturn total",
+          "}",
+          ""
+        ],
+        "fullText": "func Sum(values []int) int {\n\ttotal := 0\n\tfor _, value := range values {\n\t\ttotal += max(value, 0)\n\t}\n\treturn total\n}",
+        "changedLines": [
+          6
+        ],
+        "level": "function",
+        "kind": "function_declaration",
+        "extraLines": []
+      },
+      {
+        "id": "src/flow.ts:4:if_statement",
+        "path": "src/flow.ts",
+        "name": "if (value > 10) {",
+        "startLine": 4,
+        "endLine": 8,
+        "header": "if (value > 10) {",
+        "firstLines": [
+          "    if (value > 10) {",
+          "      total += Math.max(value, 0);",
+          "    } else {",
+          "      total += 1;",
+          "    }",
+          "  }",
+          "  try {",
+          "    total += 100;",
+          "  } catch (error) {",
+          "    total -= 1;"
+        ],
+        "fullText": "    if (value > 10) {\n      total += Math.max(value, 0);\n    } else {\n      total += 1;\n    }",
+        "changedLines": [
+          5
+        ],
+        "level": "block",
+        "kind": "if_statement",
+        "extraLines": [
+          6
+        ]
+      },
+      {
+        "id": "src/sample.cs:4:foreach_statement",
+        "path": "src/sample.cs",
+        "name": "foreach (var v in values) {",
+        "startLine": 4,
+        "endLine": 6,
+        "header": "foreach (var v in values) {",
+        "firstLines": [
+          "    foreach (var v in values) {",
+          "      sum += Math.Max(v, 0);",
+          "    }",
+          "    return sum;",
+          "  }",
+          "}",
+          ""
+        ],
+        "fullText": "    foreach (var v in values) {\n      sum += Math.Max(v, 0);\n    }",
+        "changedLines": [
+          5
+        ],
+        "level": "block",
+        "kind": "foreach_statement",
+        "extraLines": []
+      },
+      {
+        "id": "src/sample.py:4:if_statement",
+        "path": "src/sample.py",
+        "name": "if value > 0:",
+        "startLine": 4,
+        "endLine": 7,
+        "header": "if value > 0:",
+        "firstLines": [
+          "        if value > 0:",
+          "            result += max(value, 0)",
+          "        else:",
+          "            result -= 1",
+          "    return result",
+          ""
+        ],
+        "fullText": "        if value > 0:\n            result += max(value, 0)\n        else:\n            result -= 1",
+        "changedLines": [
+          5
+        ],
+        "level": "block",
+        "kind": "if_statement",
+        "extraLines": [
+          6
+        ]
+      },
+      {
+        "id": "src/sample.go:5:for_statement",
+        "path": "src/sample.go",
+        "name": "for _, value := range values {",
+        "startLine": 5,
+        "endLine": 7,
+        "header": "for _, value := range values {",
+        "firstLines": [
+          "\tfor _, value := range values {",
+          "\t\ttotal += max(value, 0)",
+          "\t}",
+          "\treturn total",
+          "}",
+          ""
+        ],
+        "fullText": "\tfor _, value := range values {\n\t\ttotal += max(value, 0)\n\t}",
+        "changedLines": [
+          6
+        ],
+        "level": "block",
+        "kind": "for_statement",
+        "extraLines": []
+      }
+    ],
+    "stats": {
+      "files": 6,
+      "additions": 6,
+      "deletions": 5
+    }
+  },
+  "branches": {
+    "branches": [
+      "develop",
+      "feature",
+      "master"
+    ]
+  },
+  "invalidBase": {
+    "error": "unknown ref no-such-ref"
+  },
+  "addOut": "added <id> (src/app.ts:2)\n",
+  "afterSend": {
+    "id": "<id>",
+    "path": "src/app.ts",
+    "side": "additions",
+    "line": 2,
+    "anchor": "  let sum = 0;",
+    "messages": [
+      {
+        "id": "<id>",
+        "author": "agent",
+        "body": "reset sum",
+        "at": "<time>"
+      }
+    ],
+    "status": "sent",
+    "round": 1,
+    "createdAt": "<time>",
+    "updatedAt": "<time>"
+  },
+  "resolveOut": "resolved <id> (src/app.ts:2)\n",
+  "afterReply": {
+    "id": "<id>",
+    "path": "src/app.ts",
+    "side": "additions",
+    "line": 2,
+    "anchor": "  let sum = 0;",
+    "messages": [
+      {
+        "id": "<id>",
+        "author": "agent",
+        "body": "reset sum",
+        "at": "<time>"
+      },
+      {
+        "id": "<id>",
+        "author": "agent",
+        "body": "fixed",
+        "at": "<time>"
+      },
+      {
+        "id": "<id>",
+        "author": "you",
+        "body": "not fixed yet",
+        "at": "<time>"
+      }
+    ],
+    "status": "open",
+    "round": 2,
+    "createdAt": "<time>",
+    "updatedAt": "<time>"
+  },
+  "commentsHuman": "<id>  src/app.ts:2  [open] round 2\n    not fixed yet\n\n1 open thread(s). Reply with: diffloop resolve <id> --reply \"done\"\n",
+  "commentsJson": "[\n  {\n    \"id\": \"<id>\",\n    \"path\": \"src/app.ts\",\n    \"side\": \"additions\",\n    \"line\": 2,\n    \"anchor\": \"  let sum = 0;\",\n    \"messages\": [\n      {\n        \"id\": \"<id>\",\n        \"author\": \"agent\",\n        \"body\": \"reset sum\",\n        \"at\": \"<time>\"\n      },\n      {\n        \"id\": \"<id>\",\n        \"author\": \"agent\",\n        \"body\": \"fixed\",\n        \"at\": \"<time>\"\n      },\n      {\n        \"id\": \"<id>\",\n        \"author\": \"you\",\n        \"body\": \"not fixed yet\",\n        \"at\": \"<time>\"\n      }\n    ],\n    \"status\": \"open\",\n    \"round\": 2,\n    \"createdAt\": \"<time>\",\n    \"updatedAt\": \"<time>\"\n  }\n]\n",
+  "noteOut": "noted <id>\n",
+  "status": "{\"repo\":\"/home/user/workspace/diffloop/.amp/in/freeze/repo\",\"threads\":1}\n",
+  "afterDismiss": {
+    "id": "<id>",
+    "path": "src/app.ts",
+    "side": "additions",
+    "line": 2,
+    "anchor": "  let sum = 0;",
+    "messages": [
+      {
+        "id": "<id>",
+        "author": "agent",
+        "body": "reset sum",
+        "at": "<time>"
+      },
+      {
+        "id": "<id>",
+        "author": "agent",
+        "body": "fixed",
+        "at": "<time>"
+      },
+      {
+        "id": "<id>",
+        "author": "you",
+        "body": "not fixed yet",
+        "at": "<time>"
+      },
+      {
+        "id": "<id>",
+        "author": "agent",
+        "body": "also check caller",
+        "at": "<time>"
+      }
+    ],
+    "status": "dismissed",
+    "round": 2,
+    "createdAt": "<time>",
+    "updatedAt": "<time>"
+  },
+  "sessions": "/home/user/workspace/diffloop/.amp/in/freeze/repo\t32941\tbase=HEAD\n/home/user/workspace/diffloop/.amp/in/freeze/repo2\t38145\tbase=HEAD\n",
+  "grammars": "┌────┬─────────────────────────────┬────────────────────────────────────┬──────────┬────────┐\n│    │ file                        │ extensions                         │ embedded │ cached │\n├────┼─────────────────────────────┼────────────────────────────────────┼──────────┼────────┤\n│  0 │ tree-sitter-c_sharp.wasm    │ [ \".cs\" ]                          │ false    │ true   │\n│  1 │ tree-sitter-go.wasm         │ [ \".go\" ]                          │ false    │ true   │\n│  2 │ tree-sitter-rust.wasm       │ [ \".rs\" ]                          │ false    │ false  │\n│  3 │ tree-sitter-python.wasm     │ [ \".py\" ]                          │ false    │ true   │\n│  4 │ tree-sitter-java.wasm       │ [ \".java\" ]                        │ false    │ false  │\n│  5 │ tree-sitter-c.wasm          │ [ \".c\", \".h\" ]                     │ false    │ false  │\n│  6 │ tree-sitter-cpp.wasm        │ [ \".cc\", \".cpp\", \".cxx\", \".hpp\" ]  │ false    │ false  │\n│  7 │ tree-sitter-ruby.wasm       │ [ \".rb\" ]                          │ false    │ false  │\n│  8 │ tree-sitter-php.wasm        │ [ \".php\" ]                         │ false    │ false  │\n│  9 │ tree-sitter-scala.wasm      │ [ \".scala\" ]                       │ false    │ false  │\n│ 10 │ tree-sitter-dart.wasm       │ [ \".dart\" ]                        │ false    │ false  │\n│ 11 │ tree-sitter-elixir.wasm     │ [ \".ex\", \".exs\" ]                  │ false    │ false  │\n│ 12 │ tree-sitter-haskell.wasm    │ [ \".hs\" ]                          │ false    │ false  │\n│ 13 │ tree-sitter-ocaml.wasm      │ [ \".ml\" ]                          │ false    │ false  │\n│ 14 │ tree-sitter-solidity.wasm   │ [ \".sol\" ]                         │ false    │ false  │\n│ 15 │ tree-sitter-svelte.wasm     │ [ \".svelte\" ]                      │ false    │ false  │\n│ 16 │ tree-sitter-bash.wasm       │ [ \".sh\", \".bash\" ]                 │ false    │ false  │\n│ 17 │ tree-sitter-toml.wasm       │ [ \".toml\" ]                        │ false    │ false  │\n│ 18 │ tree-sitter-javascript.wasm │ [ \".js\", \".jsx\", \".mjs\", \".cjs\" ]  │ true     │ true   │\n│ 19 │ tree-sitter-typescript.wasm │ [ \".ts\" ]                          │ true     │ true   │\n│ 20 │ tree-sitter-tsx.wasm        │ [ \".tsx\" ]                         │ true     │ true   │\n│ 21 │ tree-sitter-html.wasm       │ [ \".html\", \".htm\" ]                │ true     │ true   │\n│ 22 │ tree-sitter-css.wasm        │ [ \".css\", \".scss\" ]                │ true     │ true   │\n│ 23 │ tree-sitter-json.wasm       │ [ \".json\" ]                        │ true     │ true   │\n│ 24 │ tree-sitter-perl.wasm       │ [ \".pl\", \".pm\" ]                   │ true     │ true   │\n│ 25 │ tree-sitter-SQL.wasm        │ [ \".sql\" ]                         │ true     │ true   │\n│ 26 │ tree-sitter-xml.wasm        │ [ \".xml\", \".svg\", \".xsd\", \".xsl\" ] │ true     │ true   │\n│ 27 │ tree-sitter-markdown.wasm   │ [ \".md\" ]                          │ true     │ true   │\n│ 28 │ tree-sitter-vue.wasm        │ [ \".vue\" ]                         │ true     │ true   │\n│ 29 │ tree-sitter-yaml.wasm       │ [ \".yaml\", \".yml\" ]                │ true     │ true   │\n└────┴─────────────────────────────┴────────────────────────────────────┴──────────┴────────┘\n",
+  "upgradeCheck": "diffloop 0.1.3 is up to date (latest v0.1.3).\n",
+  "badRepoOut": "",
+  "badRepoErr": "--repo needs a path",
+  "badRepoCode": 1,
+  "addSecondOut": "added <id> (src/other.ts:1)\n",
+  "commentsSecond": "[\n  {\n    \"id\": \"<id>\",\n    \"path\": \"src/other.ts\",\n    \"side\": \"additions\",\n    \"line\": 1,\n    \"anchor\": \"export const other = 2;\",\n    \"messages\": [\n      {\n        \"id\": \"<id>\",\n        \"author\": \"agent\",\n        \"body\": \"second repo\",\n        \"at\": \"<time>\"\n      }\n    ],\n    \"status\": \"open\",\n    \"round\": 1,\n    \"createdAt\": \"<time>\",\n    \"updatedAt\": \"<time>\"\n  }\n]\n",
+  "commentsFirst": "[]\n"
+}

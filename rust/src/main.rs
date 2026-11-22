@@ -24,7 +24,7 @@ use tokio_stream::wrappers::BroadcastStream;
 const INDEX: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
 const APP_CSS: &str = include_str!("../assets/app.css");
-const VERSION: &str = "0.1.3";
+const VERSION: &str = "0.2.0";
 const REPO: &str = "rupakhetibinit/diffloop";
 
 static EVENTS: OnceLock<tokio::sync::broadcast::Sender<String>> = OnceLock::new();
@@ -680,6 +680,20 @@ fn open_browser(url: &str) {
     println!("Could not open a browser automatically. Open {url}");
 }
 
+
+fn version_newer(latest: &str, current: &str) -> bool {
+    let parts = |value: &str| value.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
+    let a = parts(latest);
+    let b = parts(current);
+    for i in 0..a.len().max(b.len()) {
+        let left = a.get(i).copied().unwrap_or(0);
+        let right = b.get(i).copied().unwrap_or(0);
+        if left > right { return true; }
+        if left < right { return false; }
+    }
+    false
+}
+
 fn upgrade(check_only: bool) {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body = match ureq::get(&url).header("User-Agent", "diffloop-upgrade").call()
@@ -690,7 +704,7 @@ fn upgrade(check_only: bool) {
     let release: Value = match serde_json::from_str(&body) { Ok(v) => v, Err(_) => return };
     let tag = release.get("tag_name").and_then(Value::as_str).unwrap_or("");
     let latest = tag.trim_start_matches('v');
-    if latest == VERSION {
+    if latest == VERSION || !version_newer(latest, VERSION) {
         println!("diffloop {VERSION} is up to date (latest {tag}).");
         return;
     }

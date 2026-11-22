@@ -74,6 +74,8 @@ function norm(value: any): any {
       .replace(/\d{13,}/g, "<time>")
       .replace(/127\.0\.0\.1:\d+/g, "127.0.0.1:<port>")
       .replace(/\t\d+\t/g, "\t<port>\t")
+      .replace(/latest v[\d.]+/g, "latest v<version>")
+      .replace(/installed [\d.]+/g, "installed <version>")
       .replace(/\/freeze\//g, "/compat/")
       .replace(/\/[^"\s]*\/diffloop\/\.amp\/in\/compat/g, "<ROOT>/.amp/in/compat");
   }
@@ -180,7 +182,7 @@ test("sessions, grammars, upgrade check, and validation match frozen Bun output"
   const sessions = (text: string) => norm(text).split("\n").filter(Boolean).sort().join("\n");
   expect(sessions(run(["sessions"], REPO).out)).toBe(sessions(FIXTURES.sessions));
   expect(norm(run(["grammars"], REPO).out)).toBe(FIXTURES.grammars);
-  expect(norm(run(["upgrade", "--check"], REPO).out)).toBe(FIXTURES.upgradeCheck);
+  expect(norm(run(["upgrade", "--check"], REPO).out)).toBe(norm(FIXTURES.upgradeCheck));
   const bad = run(["--repo"], REPO);
   expect(norm(bad.out)).toBe(FIXTURES.badRepoOut);
   expect(bad.err.includes("--repo needs a path")).toBe(true);

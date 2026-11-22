@@ -69,7 +69,7 @@ async function post(port: number, path: string, body: unknown) {
 function norm(value: any): any {
   if (typeof value === "string") {
     return value
-      .replace(/\b[0-9a-f]{8}\b/g, "<id>")
+      .replace(/\b[0-9a-f]{8,16}\b/g, "<id>")
       .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<time>")
       .replace(/\d{13,}/g, "<time>")
       .replace(/127\.0\.0\.1:\d+/g, "127.0.0.1:<port>")
@@ -197,4 +197,48 @@ test("SSE stream emits connected", async () => {
   const { value } = await response.body!.getReader().read();
   expect(new TextDecoder().decode(value)).toContain("connected");
   controller.abort();
+});
+
+test("injected context refreshes when the working tree changes", async () => {
+  const path = join(REPO, "src/flow.ts");
+  const original = readFileSync(path, "utf8");
+  try {
+    writeFileSync(path, original.replace("export function flow", "export function changedFlow"));
+    expect((await state(PORTS.main)).patch).toContain("export function changedFlow");
+  } finally {
+    writeFileSync(path, original);
+  }
+  expect((await state(PORTS.main)).patch).toContain("export function flow");
+});
+
+test("stale threads recover and are visible to the agent", async () => {
+  const path = join(REPO, "src/app.ts");
+  const original = readFileSync(path, "utf8");
+  const thread = await post(PORTS.main, "/api/threads", {
+    path: "src/app.ts", line: 2, side: "additions", anchor: "  let sum = 0;", body: "stale check",
+  }).then((response) => response.json()) as { id: string };
+  const status = async () => (await state(PORTS.main)).threads.find((t) => t.id === thread.id)?.status;
+  try {
+    expect(await status()).toBe("open");
+    writeFileSync(path, "// moved\n".repeat(25) + original);
+    expect(await status()).toBe("stale");
+    const pulled = JSON.parse(run(["comments", "--json"], REPO).out) as { id: string; status: string }[];
+    expect(pulled.find((t) => t.id === thread.id)?.status).toBe("stale");
+  } finally {
+    writeFileSync(path, original);
+  }
+  expect(await status()).toBe("open");
+});
+
+test("thread ids are unique and a send only changes its own thread", async () => {
+  const add = async (body: string) => (await post(PORTS.main, "/api/threads", {
+    path: "src/app.ts", line: 2, side: "additions", body,
+  }).then((response) => response.json())) as { id: string };
+  const first = await add("first");
+  const second = await add("second");
+  expect(first.id).not.toBe(second.id);
+  await post(PORTS.main, `/api/threads/${first.id}/send`, {});
+  const list = await (await fetch(`http://127.0.0.1:${PORTS.main}/api/threads`)).json() as { id: string; status: string }[];
+  expect(list.find((thread) => thread.id === first.id)?.status).toBe("sent");
+  expect(list.find((thread) => thread.id === second.id)?.status).toBe("open");
 });

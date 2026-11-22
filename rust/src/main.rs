@@ -11,12 +11,12 @@ use serde_json::{Value, json};
 use chrono::{SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     convert::Infallible,
     env, fs,
     path::{Path as FsPath, PathBuf},
     process::Command,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock, atomic::{AtomicU64, Ordering}},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio_stream::wrappers::BroadcastStream;
@@ -81,15 +81,26 @@ struct App {
     patch: String,
     token: String,
     threads: Vec<Thread>,
+    state: Value,
+    stamps: Vec<(PathBuf, SystemTime, u64)>,
 }
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+static ID_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn short_id() -> String {
-    let seed = now().parse::<u128>().unwrap_or(0) ^ ((std::process::id() as u128) << 64);
-    format!("{:08x}", seed as u32)
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    let seq = ID_SEQ.fetch_add(1, Ordering::Relaxed);
+    let seed = nanos ^ (seq << 32) ^ ((std::process::id() as u64) << 48);
+    format!("{seed:012x}")
+}
+
+fn new_token() -> String {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("{nanos:x}-{:x}", std::process::id())
 }
 
 fn home() -> PathBuf {
@@ -389,13 +400,25 @@ fn threads_path(repo: &FsPath) -> PathBuf {
 
 fn load_threads(repo: &FsPath) -> Vec<Thread> {
     let Some(text) = fs::read_to_string(threads_path(repo)).ok() else { return Vec::new() };
-    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+    let mut threads: Vec<Thread> = if let Ok(value) = serde_json::from_str::<Value>(&text) {
         if let Some(list) = value.get("threads") {
-            return serde_json::from_value(list.clone()).unwrap_or_default();
+            serde_json::from_value(list.clone()).unwrap_or_default()
+        } else {
+            serde_json::from_value(value).unwrap_or_default()
         }
-        return serde_json::from_value(value).unwrap_or_default();
+    } else {
+        Vec::new()
+    };
+    let mut seen = HashSet::new();
+    let mut migrated = false;
+    for thread in &mut threads {
+        if thread.id.is_empty() || !seen.insert(thread.id.clone()) {
+            thread.id = short_id();
+            migrated = true;
+        }
     }
-    Vec::new()
+    if migrated { save_threads(repo, &threads); }
+    threads
 }
 
 fn save_threads(repo: &FsPath, threads: &[Thread]) {
@@ -411,7 +434,10 @@ fn reanchor(repo: &FsPath, threads: &mut [Thread]) {
         let lines = working_lines(repo, &thread.path);
         if lines.is_empty() { continue; }
         let needle = thread.anchor.trim();
-        if lines.get(thread.line - 1).map(|s| s.trim()) == Some(needle) { continue; }
+        if lines.get(thread.line - 1).map(|s| s.trim()) == Some(needle) {
+            if thread.status == "stale" { thread.status = "open".into(); }
+            continue;
+        }
         let mut found = None;
         for distance in 1..=20 {
             if lines.get(thread.line - 1 + distance).map(|s| s.trim()) == Some(needle) {
@@ -490,7 +516,31 @@ fn control(repo: &FsPath, path: &str, method: &str, body: Option<Value>) -> Resu
     else { serde_json::from_str(&text).map_err(|e| e.to_string()) }
 }
 
-fn state_response(app: &mut App) -> Value {
+fn file_stamps(repo: &FsPath, patch: &str) -> Vec<(PathBuf, SystemTime, u64)> {
+    changed_paths(patch).into_iter().map(|path| {
+        let full = repo.join(path);
+        match fs::metadata(&full) {
+            Ok(meta) => (full, meta.modified().unwrap_or(UNIX_EPOCH), meta.len()),
+            Err(_) => (full, UNIX_EPOCH, 0),
+        }
+    }).collect()
+}
+
+fn derive_state(repo: &FsPath, patch: &str, base: &str) -> (Value, Vec<(PathBuf, SystemTime, u64)>) {
+    let paths = changed_paths(patch);
+    let scopes = collect_scopes(repo, patch, &paths);
+    let additions = patch.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
+    let deletions = patch.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
+    (json!({
+        "repo": repo.to_string_lossy(),
+        "base": base,
+        "patch": augment(repo, patch, &scopes, base),
+        "functions": scopes,
+        "stats": { "files": paths.len(), "additions": additions, "deletions": deletions },
+    }), file_stamps(repo, patch))
+}
+
+fn sync_threads(app: &mut App) -> Vec<Thread> {
     let mut threads = app.threads.clone();
     let before = threads.clone();
     reanchor(&app.repo, &mut threads);
@@ -498,17 +548,19 @@ fn state_response(app: &mut App) -> Value {
         app.threads = threads.clone();
         save_threads(&app.repo, &threads);
     }
-    let scopes = collect_scopes(&app.repo, &app.patch, &changed_paths(&app.patch));
-    let additions = app.patch.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
-    let deletions = app.patch.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
-    json!({
-        "repo": app.repo.to_string_lossy(),
-        "base": app.base,
-        "patch": augment(&app.repo, &app.patch, &scopes, &app.base),
-        "threads": threads,
-        "functions": scopes,
-        "stats": { "files": changed_paths(&app.patch).len(), "additions": additions, "deletions": deletions },
-    })
+    threads
+}
+
+fn state_response(app: &mut App) -> Value {
+    if file_stamps(&app.repo, &app.patch) != app.stamps {
+        let (state, stamps) = derive_state(&app.repo, &app.patch, &app.base);
+        app.state = state;
+        app.stamps = stamps;
+    }
+    let threads = sync_threads(app);
+    let mut state = app.state.clone();
+    state["threads"] = json!(threads);
+    state
 }
 
 async fn index() -> Html<&'static str> { Html(INDEX) }
@@ -550,6 +602,9 @@ async fn api_base(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, Json
     }
     app.base = base.clone();
     app.patch = build_patch(&app.repo, &base);
+    let (state, stamps) = derive_state(&app.repo, &app.patch, &app.base);
+    app.state = state;
+    app.stamps = stamps;
     let mut registry = read_registry();
     if let Some(entry) = registry.get_mut(&app.repo.to_string_lossy().to_string()) {
         entry["base"] = json!(base);
@@ -585,6 +640,11 @@ async fn api_threads(State(state): State<Arc<Mutex<App>>>, Json(body): Json<Valu
     Json(add_thread(&mut app, &body, "you")).into_response()
 }
 
+async fn api_threads_list(State(state): State<Arc<Mutex<App>>>) -> Json<Value> {
+    let mut app = state.lock().unwrap();
+    Json(json!(sync_threads(&mut app)))
+}
+
 async fn ctl_threads(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, method: axum::http::Method, body: Option<Json<Value>>) -> Response {
     let mut app = state.lock().unwrap();
     if headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(|v| v.strip_prefix("Bearer ").unwrap_or(v)) != Some(app.token.as_str()) {
@@ -594,8 +654,8 @@ async fn ctl_threads(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, m
         let payload = body.map(|Json(v)| v).unwrap_or_else(|| json!({}));
         return Json(add_thread(&mut app, &payload, "agent")).into_response();
     }
-    let threads: Vec<Thread> = app.threads.iter()
-        .filter(|t| ["open", "sent", "stale"].contains(&t.status.as_str())).cloned().collect();
+    let threads: Vec<Thread> = sync_threads(&mut app).into_iter()
+        .filter(|t| ["open", "sent", "stale"].contains(&t.status.as_str())).collect();
     Json(threads).into_response()
 }
 
@@ -845,10 +905,11 @@ async fn main() {
             let repo = target_repo(&rest);
             let base = flag(&rest, "base").unwrap_or_else(|| "HEAD".into());
             let port = flag(&rest, "port").and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
-            let token: String = format!("{:x}{:x}", now().parse::<u128>().unwrap_or(0), std::process::id());
+            let token = new_token();
             let patch = build_patch(&repo, &base);
             let threads = load_threads(&repo);
-            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, token: token.clone(), threads }));
+            let (state, stamps) = derive_state(&repo, &patch, &base);
+            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, token: token.clone(), threads, state, stamps }));
             let _ = EVENTS.set(tokio::sync::broadcast::channel(32).0);
             let router = Router::new()
                 .route("/", get(index))
@@ -858,7 +919,7 @@ async fn main() {
                 .route("/api/events", get(api_events))
                 .route("/api/branches", get(api_branches))
                 .route("/api/base", post(api_base))
-                .route("/api/threads", post(api_threads))
+                .route("/api/threads", get(api_threads_list).post(api_threads))
                 .route("/api/threads/{id}/{action}", post(api_thread_action))
                 .route("/ctl/threads", axum::routing::get(ctl_threads).post(ctl_threads))
                 .route("/ctl/threads/{id}/{action}", post(ctl_thread_action))

@@ -10,9 +10,9 @@
     <header id="topbar">
       <div class="logo" title="diffloop">✚</div>
       <input id="source" class="source" readonly value="" aria-label="Repository" />
-      <input id="base" class="base-input" list="base-branches" placeholder="base: HEAD" aria-label="Diff base ref" />
-      <datalist id="base-branches"></datalist>
-      <button id="base-apply" title="Apply diff base">↳</button>
+      <select id="base" class="base-select" aria-label="Diff base ref" title="Diff base ref"></select>
+      <input id="base-custom" class="base-input hidden" aria-label="Custom diff base ref" placeholder="tag or commit" />
+      <button id="base-apply" class="hidden" title="Apply custom base">Apply</button>
       <div class="top-actions">
         <button id="layout-toggle" title="Switch to unified view">⇄</button>
         <button id="collapse-all" title="Collapse or expand all files">Collapse all files</button>

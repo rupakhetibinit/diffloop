@@ -39,7 +39,7 @@ function message(author: Message["author"], body: string): Message {
 
 export async function addThread(
   repo: string,
-  input: { path: string; side: Side; line: number; anchor: string; body: string },
+  input: { path: string; side: Side; line: number; anchor: string; body: string; author?: Message["author"] },
 ): Promise<Thread> {
   const state = await loadState(repo);
   const now = new Date().toISOString();
@@ -49,7 +49,7 @@ export async function addThread(
     side: input.side,
     line: input.line,
     anchor: input.anchor,
-    messages: [message("you", input.body)],
+    messages: [message(input.author ?? "you", input.body)],
     status: "open",
     round: 1,
     createdAt: now,
@@ -63,6 +63,7 @@ export async function addThread(
 type Mutation =
   | { kind: "send" }
   | { kind: "dismiss" }
+  | { kind: "note"; author: Message["author"]; body: string }
   | { kind: "reply"; author: Message["author"]; body: string; status?: Thread["status"] };
 
 export async function mutateThread(repo: string, id: string, mutation: Mutation): Promise<Thread> {
@@ -70,7 +71,9 @@ export async function mutateThread(repo: string, id: string, mutation: Mutation)
   const thread = state.threads.find((t) => t.id === id);
   if (!thread) throw new Error(`unknown thread ${id}`);
 
-  if (mutation.kind === "reply") {
+  if (mutation.kind === "note") {
+    thread.messages.push(message(mutation.author, mutation.body));
+  } else if (mutation.kind === "reply") {
     thread.messages.push(message(mutation.author, mutation.body));
     if (mutation.status) thread.status = mutation.status;
     else if (thread.status === "resolved" || thread.status === "dismissed") {
@@ -90,6 +93,10 @@ export async function mutateThread(repo: string, id: string, mutation: Mutation)
 
 export async function resolveThread(repo: string, id: string, reply: string): Promise<Thread> {
   return mutateThread(repo, id, { kind: "reply", author: "agent", body: reply, status: "resolved" });
+}
+
+export async function noteThread(repo: string, id: string, body: string): Promise<Thread> {
+  return mutateThread(repo, id, { kind: "note", author: "agent", body });
 }
 
 export async function actionableThreads(repo: string): Promise<Thread[]> {

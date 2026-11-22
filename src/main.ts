@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readDaemon, startServer } from "./server";
+import { resolve } from "node:path";
+import { findDaemon, listDaemons, startServer } from "./server";
 import { grammarStatus } from "./grammars";
 import type { Thread } from "./types";
 
@@ -15,9 +16,28 @@ function has(name: string): boolean {
   return args.includes(`--${name}`);
 }
 
+async function targetRepo(): Promise<string> {
+  const explicit = flag("repo");
+  if (explicit) return resolve(explicit);
+  const proc = Bun.spawn(["git", "-C", process.cwd(), "rev-parse", "--show-toplevel"], {
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  const out = (await new Response(proc.stdout).text()).trim();
+  await proc.exited;
+  return out || process.cwd();
+}
+
 async function control(path: string, init?: RequestInit): Promise<Response> {
-  const daemon = await readDaemon();
-  if (!daemon) throw new Error("no diffloop server running for this user");
+  const repo = await targetRepo();
+  const daemon = await findDaemon(repo);
+  if (!daemon) {
+    const open = await listDaemons();
+    const hint = open.length
+      ? `Open reviews:\n${open.map((item) => `  ${item.repo} (port ${item.port})`).join("\n")}\nPass --repo <path> or cd into the repo.`
+      : "Start one with diffloop --repo <path>.";
+    throw new Error(`no diffloop server for ${repo}\n${hint}`);
+  }
   return fetch(`http://127.0.0.1:${daemon.port}${path}`, {
     ...init,
     headers: {
@@ -49,6 +69,37 @@ switch (command) {
     else printThreads(threads);
     break;
   }
+  case "comment": {
+    const action = args.shift();
+    if (action === "add") {
+      const path = flag("path");
+      const line = Number(flag("line"));
+      const body = flag("body");
+      if (!path || !line || !body) {
+        throw new Error('usage: diffloop comment add --path <file> --line <n> --body "note"');
+      }
+      const response = await control("/ctl/threads", {
+        method: "POST",
+        body: JSON.stringify({ path, line, body, side: flag("side") ?? "additions" }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const thread = (await response.json()) as Thread;
+      console.log(`added ${thread.id} (${thread.path}:${thread.line})`);
+    } else if (action === "note") {
+      const id = args.shift();
+      const body = flag("body");
+      if (!id || !body) throw new Error('usage: diffloop comment note <id> --body "note"');
+      const response = await control(`/ctl/threads/${id}/note`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      console.log(`noted ${id}`);
+    } else {
+      throw new Error("usage: diffloop comment add|note ...");
+    }
+    break;
+  }
   case "resolve": {
     const id = args[0];
     if (!id) throw new Error("usage: diffloop resolve <thread-id> --reply \"...\"");
@@ -60,6 +111,12 @@ switch (command) {
     if (!response.ok) throw new Error(await response.text());
     const thread = (await response.json()) as Thread;
     console.log(`resolved ${thread.id} (${thread.path}:${thread.line})`);
+    break;
+  }
+  case "sessions": {
+    const sessions = await listDaemons();
+    if (sessions.length === 0) console.log("No diffloop sessions running.");
+    else for (const session of sessions) console.log(`${session.repo}\t${session.port}\tbase=${session.base ?? "HEAD"}`);
     break;
   }
   case "status": {
@@ -74,7 +131,8 @@ switch (command) {
   case "serve": {
     const repo = flag("repo") ?? ".";
     const port = Number(flag("port") ?? 0);
-    await startServer(repo, randomUUID().replaceAll("-", ""), !has("no-open"), port);
+    const base = flag("base") ?? "HEAD";
+    await startServer(repo, randomUUID().replaceAll("-", ""), !has("no-open"), port, base);
     break;
   }
   default:

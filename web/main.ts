@@ -10,24 +10,22 @@ interface Thread {
 interface FunctionContext {
   id: string; path: string; name: string; startLine: number; endLine: number;
   header: string; firstLines: string[]; fullText: string; changedLines: number[];
+  level: "function" | "block"; kind: string; extraLines: number[];
 }
 
 const $ = <T extends HTMLElement>(selector: string) => document.querySelector<T>(selector)!;
 const diffHost = $("#diff");
-const sidebar = $("#sidebar");
 const treeHost = $("#file-tree");
-const threadsHost = $("#threads");
-const composerHost = $("#composer");
 const statsBody = $("#stats-body");
 const fileSearch = $<HTMLInputElement>("#file-search");
 const sourceInput = $<HTMLInputElement>("#source");
-const badge = $("#thread-badge");
+const baseInput = $<HTMLInputElement>("#base");
+const baseList = document.querySelector<HTMLDataListElement>("#base-branches")!;
 
 let threads: Thread[] = [];
 let functions: FunctionContext[] = [];
 let patch = "";
 let version = 0;
-let focusedId: string | null = null;
 let collapsed = false;
 let theme: "pierre-light" | "pierre-dark" = "pierre-light";
 let split = true;
@@ -50,8 +48,7 @@ const viewerOptions: Record<string, any> = {
     if (!fileDiff) return;
     const side: Side = range.side ?? "additions";
     draft = { path, side, line: range.start, anchor: anchorFor(fileDiff, side, range.start) };
-    showTab("comments");
-    renderComposer();
+    renderDiff();
   },
   diffStyle: "split",
   layout: { paddingTop: 16, paddingBottom: 16, gap: 12 },
@@ -66,24 +63,12 @@ const viewerOptions: Record<string, any> = {
       line,
       anchor: anchorFor(item.fileDiff, side, line),
     };
-    showTab("comments");
-    renderComposer();
+    renderDiff();
   },
   renderAnnotation(annotation: any) {
     const thread = threads.find((t) => t.id === annotation.metadata?.threadId);
-    if (thread) {
-      const div = document.createElement("div");
-      div.className = `annotation status-${thread.status}`;
-      div.style.cssText =
-        "margin:6px 0;padding:5px 8px;border-radius:5px;font-size:11px;border-left:2px solid currentColor;cursor:pointer";
-      div.textContent = `${thread.status} · ${thread.messages.length} message${thread.messages.length > 1 ? "s" : ""} · r${thread.round}`;
-      div.addEventListener("click", () => {
-        showTab("comments");
-        focusThread(thread.id);
-      });
-      return div;
-    }
-
+    if (thread) return threadCard(thread);
+    if (annotation.metadata?.draft) return draftCard();
     return document.createElement("div");
   },
 };
@@ -173,35 +158,34 @@ function renderStats(stats: { files: number; additions: number; deletions: numbe
   );
 }
 
-function renderComposer() {
-  composerHost.replaceChildren();
-  if (!draft) return;
-  const head = el("div", "composer-head");
-  head.append(el("span", "path", `${draft.path}:${draft.line}`), el("span", "chip status-open", "new"));
+function draftCard(): HTMLElement {
+  const card = el("div", "thread draft");
+  const head = el("div", "thread-head");
+  head.append(el("span", "path", `${draft?.path}:${draft?.line}`), el("span", "chip status-open", "new"));
   const input = el("textarea");
   input.placeholder = "What should the agent change here?";
   const actions = el("div", "thread-actions");
   const submit = el("button", "accent", "Add comment");
   const cancel = el("button", "", "Cancel");
   actions.append(submit, cancel);
-  composerHost.append(head, el("div", "anchor", draft.anchor.trim()), input, actions);
-  input.focus();
+  card.append(head, el("div", "anchor", draft?.anchor.trim() ?? ""), input, actions);
+  queueMicrotask(() => input.focus());
   submit.addEventListener("click", async () => {
     const body = input.value.trim();
     if (!body || !draft) return;
     await post("/api/threads", { ...draft, body });
     draft = null;
-    renderComposer();
     await refresh();
   });
   cancel.addEventListener("click", () => {
     draft = null;
-    renderComposer();
+    renderDiff();
   });
+  return card;
 }
 
 function threadCard(thread: Thread): HTMLElement {
-  const card = el("div", `thread${focusedId === thread.id ? " flash" : ""}`);
+  const card = el("div", "thread inline-thread");
   card.dataset.thread = thread.id;
   const head = el("div", "thread-head");
   head.append(
@@ -246,35 +230,6 @@ function threadCard(thread: Thread): HTMLElement {
   return card;
 }
 
-function renderThreads() {
-  threadsHost.replaceChildren();
-  badge.textContent = String(threads.filter((t) => t.status === "open" || t.status === "stale").length);
-  if (threads.length === 0) {
-    threadsHost.append(el("div", "empty", "No threads yet. Hover a line in the diff and press +."));
-    return;
-  }
-  const order = { stale: 0, open: 1, sent: 2, resolved: 3, dismissed: 4 };
-  for (const thread of [...threads].sort((a, b) => order[a.status] - order[b.status] || b.updatedAt.localeCompare(a.updatedAt))) {
-    threadsHost.append(threadCard(thread));
-  }
-  if (focusedId) {
-    threadsHost.querySelector<HTMLElement>(`[data-thread="${focusedId}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" });
-    focusedId = null;
-  }
-}
-
-function focusThread(id: string) {
-  focusedId = id;
-  renderThreads();
-}
-
-function showTab(tab: "files" | "comments") {
-  $("#file-panel").hidden = tab !== "files";
-  $("#comments-panel").hidden = tab !== "comments";
-  $("#tab-files").classList.toggle("active", tab === "files");
-  $("#tab-comments").classList.toggle("active", tab === "comments");
-}
-
 async function post(path: string, body: unknown) {
   const response = await fetch(path, {
     method: "POST",
@@ -301,6 +256,9 @@ function renderDiff() {
     const annotations: any[] = threads
       .filter((t) => t.path === file.name && t.status !== "dismissed")
       .map((t) => ({ side: t.side, lineNumber: t.line, metadata: { threadId: t.id } }));
+    if (draft && draft.path === file.name) {
+      annotations.push({ side: draft.side, lineNumber: draft.line, metadata: { draft: true } });
+    }
     const previous = itemsById.get(id);
     const item = {
       id, type: "diff", fileDiff: file, annotations, collapsed,
@@ -315,23 +273,45 @@ function renderDiff() {
 async function refresh() {
   const response = await fetch("/api/state");
   const state = (await response.json()) as {
-    repo: string; patch: string; threads: Thread[]; functions: FunctionContext[];
+    repo: string; base: string; patch: string; threads: Thread[]; functions: FunctionContext[];
     stats: { files: number; additions: number; deletions: number };
   };
   sourceInput.value = state.repo;
+  if (document.activeElement !== baseInput) baseInput.value = state.base;
   patch = state.patch;
   threads = state.threads;
   functions = state.functions ?? [];
   renderDiff();
   renderTree();
-  renderThreads();
   renderStats(state.stats);
-  renderComposer();
 }
 
-$("#tab-files").addEventListener("click", () => showTab("files"));
-$("#tab-comments").addEventListener("click", () => showTab("comments"));
 fileSearch.addEventListener("input", renderTree);
+
+async function applyBase() {
+  const base = baseInput.value.trim() || "HEAD";
+  try {
+    const result = await post("/api/base", { base }) as { base: string };
+    baseInput.value = result.base;
+    await refresh();
+  } catch (error) {
+    window.alert(String(error));
+    await refresh();
+  }
+}
+$("#base-apply").addEventListener("click", () => void applyBase());
+baseInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") void applyBase();
+});
+fetch("/api/branches")
+  .then((response) => response.json())
+  .then((data: { branches: string[] }) => {
+    baseList.replaceChildren(...data.branches.map((branch) => {
+      const option = document.createElement("option");
+      option.value = branch;
+      return option;
+    }));
+  });
 $("#refresh")?.addEventListener("click", () => void refresh());
 $("#send-all").addEventListener("click", async () => {
   for (const thread of threads.filter((t) => t.status === "open" || t.status === "stale")) {
@@ -359,10 +339,7 @@ $("#theme-toggle").addEventListener("click", () => {
   viewerOptions.theme = theme;
   viewer.setOptions(viewerOptions);
 });
-$("#search-toggle").addEventListener("click", () => {
-  showTab("files");
-  fileSearch.focus();
-});
+$("#search-toggle").addEventListener("click", () => fileSearch.focus());
 $("#stats-toggle").addEventListener("click", () => statsBody.classList.toggle("hidden"));
 
 const gutterAdd = $<HTMLButtonElement>("#gutter-add");
@@ -435,8 +412,7 @@ gutterAdd.addEventListener("click", () => {
   const fileDiff = path ? fileDiffs.get(path) : null;
   if (!fileDiff || !line) return;
   draft = { path: path!, side, line, anchor: anchorFor(fileDiff, side, line) };
-  showTab("comments");
-  renderComposer();
+  renderDiff();
   gutterAdd.classList.remove("visible");
 });
 

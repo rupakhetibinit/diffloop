@@ -38,10 +38,10 @@ function untrackedPatch(repo: string, path: string, contents: string): string {
   ].join("\n");
 }
 
-export async function buildPatch(repo: string): Promise<string> {
+export async function buildPatch(repo: string, base = "HEAD"): Promise<string> {
   const root = resolve(repo);
   const tracked = await git(root, [
-    "diff", "--no-ext-diff", "--no-color", "--unified=3", "HEAD", "--",
+    "diff", "--no-ext-diff", "--no-color", "--unified=3", base, "--",
   ]);
   const raw = await git(root, ["ls-files", "--others", "--exclude-standard", "-z"]);
   const paths = raw.split("\0").filter(Boolean);
@@ -72,8 +72,8 @@ export async function workingLines(repo: string, path: string): Promise<string[]
   }
 }
 
-export async function headLines(repo: string, path: string): Promise<string[]> {
-  const proc = Bun.spawn(["git", "-C", repo, "show", `HEAD:${path}`], {
+export async function headLines(repo: string, path: string, base = "HEAD"): Promise<string[]> {
+  const proc = Bun.spawn(["git", "-C", repo, "show", `${base}:${path}`], {
     stdout: "pipe",
     stderr: "ignore",
   });
@@ -82,12 +82,14 @@ export async function headLines(repo: string, path: string): Promise<string[]> {
   return out ? out.split("\n") : [];
 }
 
-const CONTEXT_LINES = 8;
+const FUNCTION_HEADER_LINES = 1;
+const BLOCK_HEADER_LINES = 4;
 
 export async function augmentPatch(
   repo: string,
   patch: string,
   functions: FunctionContext[],
+  base = "HEAD",
 ): Promise<string> {
   const sections = patch.split(/(?=^diff --git )/m).filter(Boolean);
   const result: string[] = [];
@@ -108,37 +110,43 @@ export async function augmentPatch(
     }
 
     const newLines = await workingLines(repo, path);
-    const oldLines = await headLines(repo, path);
+    const oldLines = await headLines(repo, path, base);
     const insertions: { start: number; text: string }[] = [];
-    for (const fn of functions.filter((f) => f.path === path)) {
-      const start = fn.startLine;
-      const covered = hunks.some((hunk) => {
-        const match = hunk[0]?.match(/\+(\d+)(?:,(\d+))?/);
-        if (!match) return false;
-        const hunkStart = Number(match[1]);
-        const hunkEnd = hunkStart + Number(match[2] ?? 1) - 1;
-        return start >= hunkStart && start <= hunkEnd;
-      });
-      if (covered || newLines.length === 0 || fn.changedLines.length === 0) continue;
-      const nextHunk = Math.min(
-        Infinity,
-        ...hunks
-          .map((hunk) => Number(hunk[0]?.match(/\+(\d+)/)?.[1] ?? 0))
-          .filter((line) => line >= start),
-      );
-      const boundary = Math.min(start + CONTEXT_LINES, nextHunk, Math.min(...fn.changedLines));
-      const count = Math.max(0, boundary - start);
-      if (count === 0) continue;
+    const contextHunk = (start: number, count: number) => {
       const body: string[] = [];
       for (let offset = 0; offset < count; offset++) {
         const lineNumber = start + offset;
         const text = newLines[lineNumber - 1] ?? oldLines[lineNumber - 1] ?? "";
         body.push(` ${text}`);
       }
-      insertions.push({
-        start,
-        text: [`@@ -${start},${count} +${start},${count} @@`, ...body].join("\n"),
-      });
+      return [`@@ -${start},${count} +${start},${count} @@`, ...body].join("\n");
+    };
+
+    const scopes = functions
+      .filter((fn) => fn.path === path && fn.changedLines.length > 0)
+      .sort((a, b) => a.startLine - b.startLine || (a.level === "function" ? -1 : 1));
+    let occupiedUntil = 0;
+    for (const scope of scopes) {
+      const start = scope.startLine;
+      if (start <= occupiedUntil || newLines.length === 0) continue;
+      const nextHunk = Math.min(
+        Infinity,
+        ...hunks
+          .map((hunk) => Number(hunk[0]?.match(/\+(\d+)/)?.[1] ?? 0))
+          .filter((line) => line >= start),
+      );
+      const firstChanged = Math.min(...scope.changedLines);
+      const desired = scope.level === "function" ? FUNCTION_HEADER_LINES : BLOCK_HEADER_LINES;
+      const count = Math.max(0, Math.min(start + desired, nextHunk, firstChanged, scope.endLine + 1) - start);
+      if (count > 0) {
+        insertions.push({ start, text: contextHunk(start, count) });
+        occupiedUntil = start + count - 1;
+      }
+      for (const extra of scope.extraLines) {
+        if (extra <= occupiedUntil || extra >= firstChanged || extra >= nextHunk) continue;
+        insertions.push({ start: extra, text: contextHunk(extra, 1) });
+        occupiedUntil = extra;
+      }
     }
 
     const ordered: string[] = [...header];
@@ -156,6 +164,19 @@ export async function augmentPatch(
     result.push(ordered.join("\n"));
   }
   return `${result.join("\n")}\n`;
+}
+
+export async function refExists(repo: string, ref: string): Promise<boolean> {
+  const proc = Bun.spawn(["git", "-C", repo, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return (await proc.exited) === 0;
+}
+
+export async function listBranches(repo: string): Promise<string[]> {
+  const out = await git(repo, ["branch", "--all", "--format=%(refname:short)"]);
+  return [...new Set(out.split("\n").map((line) => line.trim()).filter(Boolean))].sort();
 }
 
 export async function reanchor(

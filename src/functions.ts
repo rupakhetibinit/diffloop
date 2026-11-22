@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parserForPath } from "./grammars";
 
+export type ScopeLevel = "function" | "block";
+
 export interface FunctionContext {
   id: string;
   path: string;
@@ -12,6 +14,9 @@ export interface FunctionContext {
   firstLines: string[];
   fullText: string;
   changedLines: number[];
+  level: ScopeLevel;
+  kind: string;
+  extraLines: number[];
 }
 
 const functionNodeTypes = new Set([
@@ -37,6 +42,29 @@ const functionNodeTypes = new Set([
   "module",
   "namespace_declaration",
 ]);
+
+const blockNodeTypes = new Set([
+  "for_statement",
+  "for_in_statement",
+  "for_expression",
+  "foreach_statement",
+  "while_statement",
+  "while_expression",
+  "do_statement",
+  "loop_expression",
+  "if_statement",
+  "if_expression",
+  "switch_statement",
+  "switch_expression",
+  "match_expression",
+  "try_statement",
+  "using_statement",
+  "lock_statement",
+  "repeat_statement",
+  "select_statement",
+]);
+
+const clauseTypes = new Set(["catch_clause", "finally_clause", "else_clause", "except_clause"]);
 
 export function changedPaths(patch: string): string[] {
   const paths = new Set<string>();
@@ -75,7 +103,7 @@ export async function functionContexts(
   patch: string,
   paths: string[],
 ): Promise<FunctionContext[]> {
-  const result: FunctionContext[] = [];
+  const all: FunctionContext[] = [];
   for (const path of paths) {
     let contents: string;
     try {
@@ -91,38 +119,75 @@ export async function functionContexts(
     const touched = changedLines(patch, path);
     if (touched.length === 0) continue;
 
+    const scopes: { node: any; level: ScopeLevel }[] = [];
+    const clauses: { type: string; startLine: number }[] = [];
     const walk = (node: any) => {
-      if (functionNodeTypes.has(node.type)) {
-        const start = node.startPosition.row + 1;
-        const end = node.endPosition.row + 1;
-        const relevant = touched.filter((line) => line >= start && line <= end);
-        if (relevant.length > 0) {
-          const name = node.childByFieldName?.("name")?.text?.split("\n")[0] ?? node.type;
-          result.push({
-            id: `${path}:${start}:${name}`,
-            path,
-            name,
-            startLine: start,
-            endLine: end,
-            header: sourceLines[start - 1]?.trim() ?? "",
-            firstLines: sourceLines.slice(start - 1, start + 9),
-            fullText: sourceLines.slice(start - 1, Math.min(end, start + 199)).join("\n"),
-            changedLines: relevant,
-          });
-        }
+      if (functionNodeTypes.has(node.type)) scopes.push({ node, level: "function" });
+      if (blockNodeTypes.has(node.type)) scopes.push({ node, level: "block" });
+      if (clauseTypes.has(node.type)) {
+        clauses.push({ type: node.type, startLine: node.startPosition.row + 1 });
       }
       for (const child of node.children) walk(child);
     };
     walk(tree.rootNode);
-  }
 
-  const innermost: FunctionContext[] = [];
-  const claimed = new Set<string>();
-  for (const fn of result.sort((a, b) => a.endLine - a.startLine - (b.endLine - b.startLine))) {
-    const lines = fn.changedLines.filter((line) => !claimed.has(`${fn.path}:${line}`));
-    if (lines.length === 0) continue;
-    for (const line of lines) claimed.add(`${fn.path}:${line}`);
-    innermost.push({ ...fn, changedLines: lines });
+    const contexts = new Map<string, FunctionContext>();
+    for (const line of touched) {
+      for (const level of ["block", "function"] as ScopeLevel[]) {
+        const candidates = scopes
+          .filter(({ node, level: candidateLevel }) => {
+            if (candidateLevel !== level) return false;
+            const start = node.startPosition.row + 1;
+            const end = node.endPosition.row + 1;
+            return line >= start && line <= end;
+          })
+          .sort((a, b) =>
+            a.node.endPosition.row - a.node.startPosition.row -
+            (b.node.endPosition.row - b.node.startPosition.row),
+          );
+        const match = candidates[0];
+        if (!match) continue;
+        const { node } = match;
+        const start = node.startPosition.row + 1;
+        const end = node.endPosition.row + 1;
+        const key = `${level}:${start}:${node.type}`;
+        let context = contexts.get(key);
+        if (!context) {
+          const header = sourceLines[start - 1]?.trim() ?? "";
+          const name = node.childByFieldName?.("name")?.text?.split("\n")[0] ?? header.slice(0, 80) ?? node.type;
+          context = {
+            id: `${path}:${start}:${node.type}`,
+            path,
+            name,
+            startLine: start,
+            endLine: end,
+            header,
+            firstLines: sourceLines.slice(start - 1, start + 9),
+            fullText: sourceLines.slice(start - 1, Math.min(end, start + 199)).join("\n"),
+            changedLines: [],
+            level,
+            kind: node.type,
+            extraLines: [],
+          };
+          contexts.set(key, context);
+        }
+        if (!context.changedLines.includes(line)) context.changedLines.push(line);
+      }
+    }
+
+    for (const context of contexts.values()) {
+      if (context.level !== "block") continue;
+      const paired =
+        context.kind.includes("try") ? ["catch_clause", "finally_clause", "except_clause"]
+          : context.kind.includes("if") ? ["else_clause"] : [];
+      for (const clause of clauses) {
+        if (!paired.includes(clause.type)) continue;
+        if (clause.startLine <= context.startLine || clause.startLine > context.endLine + 1) continue;
+        if (!context.extraLines.includes(clause.startLine)) context.extraLines.push(clause.startLine);
+      }
+      context.extraLines.sort((a, b) => a - b);
+    }
+    all.push(...contexts.values());
   }
-  return innermost;
+  return all.sort((a, b) => a.startLine - b.startLine);
 }

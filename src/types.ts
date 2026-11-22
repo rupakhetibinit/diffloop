@@ -31,4 +31,5 @@ export interface ServerInfo {
   port: number;
   token: string;
   repo: string;
+  base?: string;
 }

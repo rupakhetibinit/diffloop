@@ -10,6 +10,9 @@
     <header id="topbar">
       <div class="logo" title="diffloop">✚</div>
       <input id="source" class="source" readonly value="" aria-label="Repository" />
+      <input id="base" class="base-input" list="base-branches" placeholder="base: HEAD" aria-label="Diff base ref" />
+      <datalist id="base-branches"></datalist>
+      <button id="base-apply" title="Apply diff base">↳</button>
       <div class="top-actions">
         <button id="layout-toggle" title="Switch to unified view">⇄</button>
         <button id="collapse-all" title="Collapse or expand all files">Collapse all files</button>
@@ -20,18 +23,10 @@
     </header>
     <main>
       <aside id="sidebar">
-        <div class="side-tabs">
-          <button id="tab-files" class="active">Files</button>
-          <button id="tab-comments">Comments <span id="thread-badge" class="badge">0</span></button>
-        </div>
+        <div class="side-head"><strong>Files</strong><span class="hint">click a line number or + to comment</span></div>
         <div id="file-panel" class="panel">
           <input id="file-search" class="file-search" placeholder="Search files" />
           <div id="file-tree" class="tree"></div>
-        </div>
-        <div id="comments-panel" class="panel" hidden>
-          <div class="comments-hint">Hover a line in the diff and press + to comment.</div>
-          <div id="composer"></div>
-          <div id="threads"></div>
         </div>
         <div id="stats" class="stats">
           <button id="stats-toggle">▾ Diff Stats (F2)</button>

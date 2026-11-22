@@ -1,27 +1,56 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { augmentPatch, buildPatch, patchHash, reanchor } from "./git";
+import { augmentPatch, buildPatch, listBranches, patchHash, reanchor, refExists, workingLines } from "./git";
 import { changedPaths, functionContexts, type FunctionContext } from "./functions";
-import { actionableThreads, addThread, loadState, mutateThread, resolveThread, saveState } from "./store";
+import { actionableThreads, addThread, loadState, mutateThread, noteThread, resolveThread, saveState } from "./store";
 import type { RepoState, ServerInfo, Side } from "./types";
 import { CSS, HTML, JS } from "./embedded";
 
 type Client = ReadableStreamDefaultController<Uint8Array>;
 
 const encoder = new TextEncoder();
-const daemonFile = () => join(homedir(), ".config", "diffloop", "daemon.json");
+const registryFile = () => join(homedir(), ".config", "diffloop", "daemons.json");
 
-export async function startServer(repo: string, token: string, open: boolean, requestedPort = 0) {
+async function readRegistry(): Promise<Record<string, ServerInfo>> {
+  try {
+    return JSON.parse(await readFile(registryFile(), "utf8")) as Record<string, ServerInfo>;
+  } catch {
+    return {};
+  }
+}
+
+async function writeRegistry(registry: Record<string, ServerInfo>): Promise<void> {
+  await mkdir(join(registryFile(), ".."), { recursive: true });
+  await writeFile(registryFile(), JSON.stringify(registry, null, 2));
+}
+
+export async function findDaemon(repo: string): Promise<ServerInfo | null> {
+  const registry = await readRegistry();
+  return registry[resolve(repo)] ?? null;
+}
+
+export async function listDaemons(): Promise<ServerInfo[]> {
+  return Object.values(await readRegistry());
+}
+
+export async function startServer(
+  repo: string,
+  token: string,
+  open: boolean,
+  requestedPort = 0,
+  initialBase = "HEAD",
+) {
   const root = resolve(repo);
   const clients = new Set<Client>();
-  let patch = await buildPatch(root);
+  let currentBase = initialBase;
+  let patch = await buildPatch(root, currentBase);
   let hash = patchHash(patch);
   let functions: FunctionContext[] = [];
   let displayPatch = patch;
   const updateFunctions = async () => {
     functions = await functionContexts(root, patch, changedPaths(patch));
-    displayPatch = await augmentPatch(root, patch, functions);
+    displayPatch = await augmentPatch(root, patch, functions, currentBase);
   };
   await updateFunctions();
 
@@ -37,7 +66,7 @@ export async function startServer(repo: string, token: string, open: boolean, re
   };
 
   const refresh = async () => {
-    const next = await buildPatch(root);
+    const next = await buildPatch(root, currentBase);
     const nextHash = patchHash(next);
     if (nextHash !== hash) {
       patch = next;
@@ -66,6 +95,34 @@ export async function startServer(repo: string, token: string, open: boolean, re
       if (method === "GET" && path === "/app.css") {
         const css = CSS || (await Bun.file("web/style.css").text());
         return new Response(css, { headers: { "Content-Type": "text/css; charset=utf-8" } });
+      }
+
+      if (path === "/api/branches" && method === "GET") {
+        return Response.json({ branches: await listBranches(root) });
+      }
+
+      if (path === "/api/base" && method === "POST") {
+        const origin = req.headers.get("origin");
+        if (origin && origin !== `http://127.0.0.1:${server.port}`) {
+          return new Response("forbidden origin", { status: 403 });
+        }
+        const body = (await req.json()) as { base?: string };
+        const nextBase = body.base?.trim();
+        if (!nextBase) return new Response("missing base", { status: 400 });
+        if (!(await refExists(root, nextBase))) {
+          return Response.json({ error: `unknown ref ${nextBase}` }, { status: 400 });
+        }
+        currentBase = nextBase;
+        patch = await buildPatch(root, currentBase);
+        hash = patchHash(patch);
+        await updateFunctions();
+        const registry = await readRegistry();
+        if (registry[root]) {
+          registry[root].base = currentBase;
+          await writeRegistry(registry);
+        }
+        broadcast({ type: "diff" });
+        return Response.json({ base: currentBase });
       }
 
       if (path === "/api/events" && method === "GET") {
@@ -112,6 +169,7 @@ export async function startServer(repo: string, token: string, open: boolean, re
         }
         return Response.json({
           repo: root,
+          base: currentBase,
           patch: displayPatch,
           threads: state.threads,
           functions,
@@ -167,16 +225,33 @@ export async function startServer(repo: string, token: string, open: boolean, re
       if (path.startsWith("/ctl/")) {
         const auth = req.headers.get("authorization");
         if (auth !== `Bearer ${token}`) return new Response("unauthorized", { status: 401 });
-        const match = path.match(/^\/ctl\/threads\/([a-z0-9]+)\/resolve$/);
+        const match = path.match(/^\/ctl\/threads\/([a-z0-9]+)\/(resolve|note)$/);
         if (match && method === "POST") {
-          const body = (await req.json()) as { reply?: string };
+          const body = (await req.json()) as { reply?: string; body?: string };
           try {
-            const thread = await resolveThread(root, match[1], body.reply ?? "");
+            const thread = match[2] === "resolve"
+              ? await resolveThread(root, match[1], body.reply ?? "")
+              : await noteThread(root, match[1], body.body ?? "");
             broadcast({ type: "threads" });
             return Response.json(thread);
           } catch (error) {
             return new Response(String(error), { status: 404 });
           }
+        }
+        if (path === "/ctl/threads" && method === "POST") {
+          const body = (await req.json()) as { path?: string; side?: Side; line?: number; body?: string };
+          if (!body.path || !body.line || !body.body) return new Response("missing fields", { status: 400 });
+          const lines = await workingLines(root, body.path);
+          const thread = await addThread(root, {
+            path: body.path,
+            side: body.side ?? "additions",
+            line: body.line,
+            anchor: lines[body.line - 1] ?? "",
+            body: body.body,
+            author: "agent",
+          });
+          broadcast({ type: "threads" });
+          return Response.json(thread, { status: 201 });
         }
         if (path === "/ctl/threads" && method === "GET") {
           return Response.json(await actionableThreads(root));
@@ -191,11 +266,16 @@ export async function startServer(repo: string, token: string, open: boolean, re
     },
   });
 
-  const info: ServerInfo = { port: server.port, token, repo: root };
-  await mkdir(join(daemonFile(), ".."), { recursive: true });
-  await writeFile(daemonFile(), JSON.stringify(info));
+  const info: ServerInfo = { port: server.port, token, repo: root, base: currentBase };
+  const registry = await readRegistry();
+  registry[root] = info;
+  await writeRegistry(registry);
   const stop = async () => {
-    await unlink(daemonFile()).catch(() => {});
+    const current = await readRegistry();
+    if (current[root]?.port === server.port) {
+      delete current[root];
+      await writeRegistry(current);
+    }
     server.stop();
   };
   process.on("SIGINT", () => void stop().then(() => process.exit(0)));
@@ -210,12 +290,4 @@ export async function startServer(repo: string, token: string, open: boolean, re
     Bun.spawn([opener, url], { stdout: "ignore", stderr: "ignore" });
   }
   return { url, stop };
-}
-
-export async function readDaemon(): Promise<ServerInfo | null> {
-  try {
-    return JSON.parse(await readFile(daemonFile(), "utf8")) as ServerInfo;
-  } catch {
-    return null;
-  }
 }

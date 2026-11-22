@@ -74,7 +74,8 @@ function norm(value: any): any {
       .replace(/\d{13,}/g, "<time>")
       .replace(/127\.0\.0\.1:\d+/g, "127.0.0.1:<port>")
       .replace(/\t\d+\t/g, "\t<port>\t")
-      .replace(/\/freeze\//g, "/compat/");
+      .replace(/\/freeze\//g, "/compat/")
+      .replace(/\/[^"\s]*\/diffloop\/\.amp\/in\/compat/g, "<ROOT>/.amp/in/compat");
   }
   if (Array.isArray(value)) return value.map(norm);
   if (value && typeof value === "object") {
@@ -136,9 +137,7 @@ test("version and help match frozen Bun output", () => {
 });
 
 test("state patch and stats match frozen Bun output", async () => {
-  const receivedState = norm(await state(PORTS.main));
-  writeFileSync("/tmp/compat-state.json", JSON.stringify(receivedState, null, 2));
-  expect(receivedState).toEqual(norm(FIXTURES.stateHead));
+  expect(norm(await state(PORTS.main))).toEqual(norm(FIXTURES.stateHead));
   expect(norm(await state(PORTS.base))).toEqual(norm(FIXTURES.stateDevelop));
 });
 

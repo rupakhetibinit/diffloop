@@ -24,7 +24,7 @@ use tokio_stream::wrappers::BroadcastStream;
 const INDEX: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
 const APP_CSS: &str = include_str!("../assets/app.css");
-const VERSION: &str = "0.2.0";
+const VERSION: &str = "0.2.1";
 const REPO: &str = "rupakhetibinit/diffloop";
 
 static EVENTS: OnceLock<tokio::sync::broadcast::Sender<String>> = OnceLock::new();

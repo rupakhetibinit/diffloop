@@ -7,6 +7,13 @@
       "sourceType": "github",
       "skillPath": "skills/diffs/SKILL.md",
       "computedHash": "3f86b805fccd8ad5f931e3babed94d89929b3d5e89929f37ed39c04b5fd4d7c9"
+    },
+    "ui-sdk": {
+      "source": "vercel-labs/ui",
+      "commit": "c321356a75ca3c70fa0c35e985d9f69d1142904c",
+      "sourceType": "github",
+      "skillPath": "packages/core/skills/ui-sdk/SKILL.md",
+      "computedHash": "cabe635c8f279e77b50a265c499ea2e8ebd471574b96acfc61a11a147d553e6d"
     }
   }
 }

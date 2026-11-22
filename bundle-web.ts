@@ -1,8 +1,9 @@
 const result = await Bun.build({
-  entrypoints: ["web/main.ts"],
+  entrypoints: ["web/main.tsx"],
   target: "browser",
   format: "iife",
   minify: true,
+  define: { "process.env.NODE_ENV": '"production"' },
   outdir: "rust/assets",
 });
 if (!result.success) {

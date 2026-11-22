@@ -7,35 +7,7 @@
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>
-    <header id="topbar">
-      <div class="logo" title="diffloop">✚</div>
-      <input id="source" class="source" readonly value="" aria-label="Repository" />
-      <select id="base" class="base-select" aria-label="Diff base ref" title="Diff base ref"></select>
-      <input id="base-custom" class="base-input hidden" aria-label="Custom diff base ref" placeholder="tag or commit" />
-      <button id="base-apply" class="hidden" title="Apply custom base">Apply</button>
-      <div class="top-actions">
-        <button id="layout-toggle" title="Switch to unified view">⇄</button>
-        <button id="collapse-all" title="Collapse or expand all files">Collapse all files</button>
-        <button id="theme-toggle" title="Toggle light and dark theme">◐</button>
-        <button id="search-toggle" title="Show file search">⌕</button>
-        <button id="send-all" class="accent">Send to agent</button>
-      </div>
-    </header>
-    <main>
-      <aside id="sidebar">
-        <div class="side-head"><strong>Files</strong><span class="hint">click a line number or + to comment</span></div>
-        <div id="file-panel" class="panel">
-          <input id="file-search" class="file-search" placeholder="Search files" />
-          <div id="file-tree" class="tree"></div>
-        </div>
-        <div id="stats" class="stats">
-          <button id="stats-toggle">▾ Diff Stats (F2)</button>
-          <div id="stats-body"></div>
-        </div>
-      </aside>
-      <section id="diff"></section>
-    </main>
-    <button id="gutter-add" title="Comment on this line">+</button>
+    <div id="app"></div>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

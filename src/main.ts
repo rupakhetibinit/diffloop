@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { findDaemon, listDaemons, startServer } from "./server";
 import { grammarStatus } from "./grammars";
+import { installUpgrade, latestRelease, newerVersion } from "./upgrade";
 import type { Thread } from "./types";
 
 const args = process.argv.slice(2);
-const VERSION = "0.1.0";
+const VERSION = "0.1.2";
 
 if (args.includes("--version") || args.includes("-v")) {
   console.log(`diffloop ${VERSION}`);
@@ -21,7 +22,8 @@ Usage:
   diffloop comment note <id> --body "note"
   diffloop resolve <id> --reply "done"
   diffloop sessions
-  diffloop grammars`);
+  diffloop grammars
+  diffloop upgrade [--check]`);
   process.exit(0);
 }
 
@@ -35,6 +37,8 @@ function flag(name: string): string | undefined {
 function has(name: string): boolean {
   return args.includes(`--${name}`);
 }
+
+if (has("repo") && !flag("repo")) throw new Error("--repo needs a path");
 
 async function targetRepo(): Promise<string> {
   const explicit = flag("repo");
@@ -131,6 +135,25 @@ switch (command) {
     if (!response.ok) throw new Error(await response.text());
     const thread = (await response.json()) as Thread;
     console.log(`resolved ${thread.id} (${thread.path}:${thread.line})`);
+    break;
+  }
+  case "upgrade": {
+    const release = await latestRelease();
+    if (!newerVersion(VERSION, release.version)) {
+      console.log(`diffloop ${VERSION} is up to date (latest ${release.tag}).`);
+      break;
+    }
+    if (has("check")) {
+      console.log(`diffloop ${release.tag} is available (installed ${VERSION}).`);
+      break;
+    }
+    console.log(`Upgrading diffloop ${VERSION} -> ${release.tag} (${release.asset.name})...`);
+    await installUpgrade(release);
+    if (process.platform === "win32") {
+      console.log("Windows: close diffloop windows; the new binary replaces itself in a moment.");
+    } else {
+      console.log(`Upgraded to ${release.tag}. Restart any running diffloop windows.`);
+    }
     break;
   }
   case "sessions": {

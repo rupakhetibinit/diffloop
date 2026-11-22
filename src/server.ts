@@ -286,8 +286,12 @@ export async function startServer(
   const url = `http://127.0.0.1:${server.port}`;
   console.log(`diffloop serving ${root}\n${url}`);
   if (open) {
-    const opener = process.platform === "darwin" ? "open" : "xdg-open";
-    Bun.spawn([opener, url], { stdout: "ignore", stderr: "ignore" });
+    const command = process.platform === "win32"
+      ? ["cmd", "/c", "start", "", url]
+      : process.platform === "darwin"
+        ? ["open", url]
+        : ["xdg-open", url];
+    Bun.spawn(command, { stdout: "ignore", stderr: "ignore" });
   }
   return { url, stop };
 }

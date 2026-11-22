@@ -16,6 +16,12 @@ On Windows (PowerShell):
 irm https://raw.githubusercontent.com/rupakhetibinit/diffloop/main/install.ps1 | iex
 ```
 
+Upgrade in place with `diffloop upgrade` (or check first with
+`diffloop upgrade --check`). It downloads the latest release binary and replaces
+the running one; on Windows, close any diffloop windows and it will finish the
+swap in the background. The `upgrade` command is available from v0.1.2 onward —
+run the installer once if you have an older binary.
+
 ## Run
 
 ```sh

@@ -234,6 +234,111 @@ function FileTree({ files, selected, query, expanded, onExpandedChange, onSelect
   );
 }
 
+function codeScrollBlocks(section: HTMLElement | null): HTMLElement[] {
+  if (!section) return [];
+  return [...section.querySelectorAll("diffs-container")].flatMap((host) => {
+    const root = (host as HTMLElement).shadowRoot;
+    return root ? [...root.querySelectorAll<HTMLElement>("[data-code]")] : [];
+  });
+}
+
+function DiffScrollbar({ sectionRef, revision, layout }: {
+  sectionRef: React.RefObject<HTMLElement | null>;
+  revision: unknown;
+  layout: string;
+}) {
+  const [position, setPosition] = useState(0);
+  const [maxScroll, setMaxScroll] = useState(0);
+  const [thumbWidth, setThumbWidth] = useState(80);
+  const [visible, setVisible] = useState(false);
+  const blocks = useRef<HTMLElement[]>([]);
+  const bound = useRef(new WeakSet<HTMLElement>());
+  const maxScrollRef = useRef(0);
+
+  const syncFromScroll = useCallback((event: Event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target?.matches?.("[data-code]")) return;
+    const furthest = blocks.current.reduce((furthest, block) => Math.max(furthest, block.scrollLeft), 0);
+    setPosition(Math.min(maxScrollRef.current, Math.max(0, furthest)));
+  }, []);
+
+  const measure = useCallback(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    const found = codeScrollBlocks(section);
+    blocks.current = found;
+    for (const block of found) {
+      if (!bound.current.has(block)) {
+        block.addEventListener("scroll", syncFromScroll, { passive: true });
+        bound.current.add(block);
+      }
+    }
+    let content = 0;
+    let viewport = 0;
+    let max = 0;
+    let furthest = 0;
+    for (const block of found) {
+      content = Math.max(content, block.scrollWidth);
+      viewport = Math.max(viewport, block.clientWidth);
+      max = Math.max(max, block.scrollWidth - block.clientWidth);
+      furthest = Math.max(furthest, block.scrollLeft);
+    }
+    maxScrollRef.current = max;
+    setMaxScroll(max);
+    setPosition(Math.min(max, furthest));
+    setVisible(max > 1);
+    if (content > viewport) {
+      const track = section.clientWidth;
+      setThumbWidth(Math.max(48, Math.min(track, Math.round((viewport / content) * track))));
+    }
+  }, [sectionRef, syncFromScroll]);
+
+  useEffect(() => {
+    measure();
+    const section = sectionRef.current;
+    if (!section) return;
+    const frame = requestAnimationFrame(measure);
+    const timer = window.setTimeout(measure, 200);
+    const observer = new MutationObserver(measure);
+    observer.observe(section, { childList: true, subtree: true });
+    const resize = new ResizeObserver(measure);
+    resize.observe(section);
+    window.addEventListener("resize", measure);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      observer.disconnect();
+      resize.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [measure, revision, layout]);
+
+  if (!visible) return null;
+  const apply = (value: number) => {
+    setPosition(value);
+    const ordered = [...blocks.current].sort(
+      (a, b) => (b.scrollWidth - b.clientWidth) - (a.scrollWidth - a.clientWidth),
+    );
+    for (const block of ordered) {
+      const limit = block.scrollWidth - block.clientWidth;
+      if (limit > 0) block.scrollLeft = Math.min(value, limit);
+    }
+  };
+  return (
+    <input
+      type="range"
+      className="diff-hscroll"
+      min={0}
+      max={Math.max(1, maxScroll)}
+      step={1}
+      value={position}
+      aria-label="Scroll diff horizontally"
+      style={{ "--thumb-width": `${thumbWidth}px` } as React.CSSProperties}
+      onChange={(event) => apply(Number(event.currentTarget.value))}
+    />
+  );
+}
+
 function App() {
   const [data, setData] = useState<State | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
@@ -252,6 +357,7 @@ function App() {
   const [sendNote, setSendNote] = useState<string | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const viewer = useRef<CodeViewHandle<AnnotationMeta, undefined>>(null);
+  const diffRef = useRef<HTMLElement | null>(null);
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/state");
@@ -337,10 +443,24 @@ function App() {
     setCustomBase(false);
   }, [data?.base]);
 
-  const files = useMemo(
-    () => data ? parsePatchFiles(data.patch, { cacheKeyPrefix: "diffloop" }).flatMap((p) => p.files) : [],
-    [data?.patch],
-  );
+  const files = useMemo(() => {
+    if (!data) return [];
+    const parsed = parsePatchFiles(data.patch, { cacheKeyPrefix: "diffloop" }).flatMap((p) => p.files);
+    if (parsed.length <= 1) return parsed;
+    const byName = new Map(parsed.map((file) => [file.name, file]));
+    const ordered: FileDiffMetadata[] = [];
+    const visit = (nodes: TreeItemData[]) => {
+      for (const item of nodes) {
+        if (item.children) visit(item.children);
+        else {
+          const file = byName.get(item.value);
+          if (file) ordered.push(file);
+        }
+      }
+    };
+    visit(treeFromPaths(parsed.map((file) => file.name)));
+    return ordered.length === parsed.length ? ordered : parsed;
+  }, [data?.patch]);
   const fileDiffs = useMemo(() => new Map(files.map((file) => [file.name, file])), [files]);
   const allDirs = useMemo(() => {
     const dirs = new Set<string>();
@@ -393,6 +513,7 @@ function App() {
     enableLineSelection: true,
     diffStyle: split ? "split" : "unified",
     layout: { paddingTop: 16, paddingBottom: 16, gap: 12 },
+    unsafeCSS: "[data-code]{scrollbar-width:none}[data-code]::-webkit-scrollbar{width:0;height:0}",
   }), [theme, split]);
 
   const renderAnnotation = useStableCallback((...args: any[]) => {
@@ -575,16 +696,17 @@ function App() {
             </div>
           </div>
         </aside>
-        <section id="diff">
+        <section id="diff" ref={diffRef}>
           <CodeView<AnnotationMeta, undefined>
             ref={viewer}
             items={items}
             options={options}
-            style={{ height: "100%", overflow: "auto" }}
+            style={{ flex: "1 1 auto", minHeight: 0, overflow: "auto" }}
             renderAnnotation={renderAnnotation}
             renderGutterUtility={renderGutterUtility}
             onSelectedLinesChange={onSelectedLinesChange}
           />
+          <DiffScrollbar sectionRef={diffRef} revision={items} layout={`${split}:${collapsed}`} />
         </section>
       </main>
     </ReviewContext.Provider>

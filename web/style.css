@@ -187,7 +187,40 @@ textarea { width: 100%; min-height: 58px; resize: vertical; background: var(--bg
 .empty { color: var(--muted); font-size: 12px; padding: 20px 4px; text-align: center; }
 .inline-thread { margin: 6px 0; max-width: 680px; }
 
-#diff { flex: 1; min-width: 0; min-height: 0; background: var(--bg); }
+#diff { flex: 1; min-width: 0; min-height: 0; background: var(--bg); display: flex; flex-direction: column; }
+.diff-hscroll {
+  flex: none;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0 12px;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--muted);
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.diff-hscroll::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: var(--line); }
+.diff-hscroll::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: var(--thumb-width, 80px);
+  height: 12px;
+  margin-top: -3px;
+  border-radius: 6px;
+  background: var(--muted);
+}
+.diff-hscroll::-moz-range-track { height: 6px; border-radius: 3px; background: var(--line); }
+.diff-hscroll::-moz-range-thumb { width: var(--thumb-width, 80px); height: 12px; border: 0; border-radius: 6px; background: var(--muted); }
+.diff-hscroll:hover::-webkit-slider-thumb,
+.diff-hscroll:active::-webkit-slider-thumb,
+.diff-hscroll:hover::-moz-range-thumb,
+.diff-hscroll:active::-moz-range-thumb { background: var(--text); }
+.diff-hscroll:focus-visible { outline: none; }
+.diff-hscroll:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
+.diff-hscroll:focus-visible::-moz-range-thumb { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--accent); }
 .gutter-add-inline {
   display: flex;
   align-items: center;

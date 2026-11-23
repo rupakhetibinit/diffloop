@@ -848,44 +848,146 @@ fn version_newer(latest: &str, current: &str) -> bool {
     false
 }
 
-fn upgrade(check_only: bool) {
+fn release_asset() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "diffloop-windows-x64.exe"
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") { "diffloop-darwin-arm64" } else { "diffloop-darwin-x64" }
+    } else if cfg!(target_arch = "aarch64") {
+        "diffloop-linux-arm64"
+    } else {
+        "diffloop-linux-x64"
+    }
+}
+
+#[cfg(unix)]
+fn mark_executable(staged: &FsPath, target: &FsPath) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = fs::metadata(target)
+        .map(|meta| meta.permissions().mode() & 0o777)
+        .unwrap_or(0o755);
+    let mode = if mode & 0o111 == 0 { 0o755 } else { mode };
+    fs::set_permissions(staged, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(windows)]
+fn schedule_windows_replace(target: &FsPath, staged: &FsPath) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    let escape = |value: &str| value.replace('\'', "''");
+    let process = target.file_stem().and_then(|name| name.to_str()).unwrap_or("diffloop");
+    let script = format!(
+        "Start-Sleep -Milliseconds 800; while (Get-Process -Name '{}' -ErrorAction SilentlyContinue) {{ Start-Sleep -Milliseconds 250 }}; for ($i = 0; $i -lt 120; $i++) {{ try {{ Move-Item -Force -LiteralPath '{}' -Destination '{}' -ErrorAction Stop; break }} catch {{ Start-Sleep -Milliseconds 250 }} }}",
+        escape(process),
+        escape(&staged.to_string_lossy()),
+        escape(&target.to_string_lossy()),
+    );
+    Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command"])
+        .arg(script)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x0800_0000)
+        .spawn()
+        .map(|_| ())
+}
+
+fn upgrade(check_only: bool) -> bool {
     let url = format!("https://api.github.com/repos/{REPO}/releases/latest");
     let body = match ureq::get(&url).header("User-Agent", "diffloop-upgrade").call()
         .and_then(|r| r.into_body().read_to_string()) {
         Ok(body) => body,
-        Err(e) => { eprintln!("upgrade failed: {e}"); return; }
+        Err(e) => { eprintln!("upgrade failed: {e}"); return false; }
     };
-    let release: Value = match serde_json::from_str(&body) { Ok(v) => v, Err(_) => return };
+    let release: Value = match serde_json::from_str(&body) {
+        Ok(value) => value,
+        Err(error) => { eprintln!("upgrade failed: could not parse release metadata: {error}"); return false; }
+    };
     let tag = release.get("tag_name").and_then(Value::as_str).unwrap_or("");
     let latest = tag.trim_start_matches('v');
     if latest == VERSION || !version_newer(latest, VERSION) {
         println!("diffloop {VERSION} is up to date (latest {tag}).");
-        return;
+        return true;
     }
     if check_only {
         println!("diffloop {tag} is available (installed {VERSION}).");
-        return;
+        return true;
     }
-    let asset = if cfg!(target_os = "windows") { "diffloop-windows-x64.exe" }
-        else if cfg!(target_os = "macos") { "diffloop-darwin-arm64" }
-        else { "diffloop-linux-x64" };
+    let asset = release_asset();
     let download = release.get("assets").and_then(Value::as_array)
         .and_then(|assets| assets.iter().find(|a| a.get("name").and_then(Value::as_str) == Some(asset)))
         .and_then(|a| a.get("browser_download_url").and_then(Value::as_str));
-    let Some(url) = download else { eprintln!("no asset for this platform"); return; };
+    let Some(url) = download else { eprintln!("no asset for this platform"); return false; };
     println!("Upgrading diffloop {VERSION} -> {tag} ({asset})...");
     let bytes = match ureq::get(url).call().and_then(|r| r.into_body().with_config().limit(200_000_000).read_to_vec()) {
         Ok(bytes) => bytes,
-        Err(e) => { eprintln!("download failed: {e}"); return; }
+        Err(e) => { eprintln!("download failed: {e}"); return false; }
     };
-    let target = env::current_exe().unwrap_or_default();
-    let staged = target.with_file_name(format!("diffloop-new-{}", std::process::id()));
-    if fs::write(&staged, &bytes).is_err() { return; }
-    if cfg!(target_os = "windows") {
-        println!("Windows: close diffloop windows; the new binary replaces itself in a moment.");
+    let target = match env::current_exe() {
+        Ok(path) => path,
+        Err(error) => { eprintln!("upgrade failed: cannot locate the current executable: {error}"); return false; }
+    };
+    let staged = if cfg!(windows) {
+        target.with_file_name(format!("diffloop-new-{}.exe", std::process::id()))
     } else {
-        let _ = fs::rename(&staged, &target);
-        println!("Upgraded to {tag}. Restart any running diffloop windows.");
+        target.with_file_name(format!(".diffloop-new-{}", std::process::id()))
+    };
+    if let Err(error) = fs::write(&staged, &bytes) {
+        let _ = fs::remove_file(&staged);
+        eprintln!("upgrade failed: could not write {}: {error}", staged.display());
+        if !cfg!(windows) { eprintln!("Re-run with sudo if diffloop is installed in a system directory, or reinstall with install.sh."); }
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        if let Err(error) = mark_executable(&staged, &target) {
+            let _ = fs::remove_file(&staged);
+            eprintln!("upgrade failed: could not mark {} executable: {error}", staged.display());
+            return false;
+        }
+    }
+    let expected = format!("diffloop {latest}");
+    match Command::new(&staged).arg("--version").output() {
+        Ok(output) if output.status.success()
+            && String::from_utf8_lossy(&output.stdout).trim() == expected => {}
+        Ok(output) => {
+            let reported = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let _ = fs::remove_file(&staged);
+            eprintln!("upgrade failed: downloaded binary reported {reported:?}, expected {expected:?}");
+            return false;
+        }
+        Err(error) => {
+            let _ = fs::remove_file(&staged);
+            eprintln!("upgrade failed: downloaded binary did not start: {error}");
+            return false;
+        }
+    }
+    #[cfg(windows)]
+    {
+        match schedule_windows_replace(&target, &staged) {
+            Ok(()) => {
+                println!("Upgrade staged. It will replace {} after diffloop exits.", target.display());
+                return true;
+            }
+            Err(error) => {
+                eprintln!("upgrade failed: could not start the replacement helper: {error}");
+                eprintln!("Close diffloop, then move {} to {}.", staged.display(), target.display());
+                return false;
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        match fs::rename(&staged, &target) {
+            Ok(()) => {
+                println!("Upgraded to {tag}. Restart any running diffloop windows.");
+                true
+            }
+            Err(error) => {
+                eprintln!("upgrade failed: could not replace {}: {error}", target.display());
+                eprintln!("The new binary is at {}. Move it into place manually or reinstall.", staged.display());
+                false
+            }
+        }
     }
 }
 
@@ -1108,7 +1210,7 @@ async fn main() {
             }
         }
         "grammars" => print_grammars(),
-        "upgrade" => upgrade(has(&rest, "check")),
+        "upgrade" => if !upgrade(has(&rest, "check")) { std::process::exit(1); },
         _ => eprintln!("unknown command {command}"),
     }
 }

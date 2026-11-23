@@ -255,7 +255,10 @@ function App() {
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/state");
-    if (!response.ok) return;
+    if (!response.ok) {
+      console.warn(`[diffloop] state refresh failed (${response.status})`);
+      return;
+    }
     setData(await response.json() as State);
   }, []);
 
@@ -264,6 +267,13 @@ function App() {
     if (!response.ok) return;
     const threads = await response.json() as Thread[];
     setData((current) => current ? { ...current, threads } : current);
+  }, []);
+
+  const loadBranches = useCallback(async () => {
+    const response = await fetch("/api/branches");
+    if (!response.ok) return;
+    const { branches } = await response.json() as { branches: string[] };
+    setBranches(branches);
   }, []);
 
   const replaceThread = useCallback((thread: Thread) => {
@@ -298,18 +308,27 @@ function App() {
 
   useEffect(() => {
     void refresh();
-    void fetch("/api/branches").then((r) => r.json()).then((d: { branches: string[] }) => setBranches(d.branches));
-  }, [refresh]);
+    void loadBranches();
+  }, [refresh, loadBranches]);
 
   useEffect(() => {
     const events = new EventSource("/api/events");
     events.onmessage = (event) => {
       const message = JSON.parse(event.data) as { type: string };
-      if (message.type === "diff") void refresh();
-      else if (message.type === "threads") void loadThreads();
+      if (message.type === "diff") {
+        void refresh();
+        void loadBranches();
+      } else if (message.type === "threads") {
+        void loadThreads();
+      } else if (message.type === "connected") {
+        console.info("[diffloop] connected");
+        void refresh();
+        void loadBranches();
+      }
     };
+    events.onerror = () => console.warn("[diffloop] event stream disconnected; reconnecting");
     return () => events.close();
-  }, [refresh, loadThreads]);
+  }, [refresh, loadThreads, loadBranches]);
 
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
   useEffect(() => {

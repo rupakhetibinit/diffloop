@@ -8,7 +8,7 @@ use axum::{
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use chrono::{SecondsFormat, Utc};
+use chrono::{Local, SecondsFormat, Utc};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
@@ -33,6 +33,10 @@ fn emit(event: &str) {
     if let Some(tx) = EVENTS.get() {
         let _ = tx.send(event.to_string());
     }
+}
+
+fn log(message: impl AsRef<str>) {
+    eprintln!("[diffloop {}] {}", Local::now().format("%H:%M:%S"), message.as_ref());
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +83,7 @@ struct App {
     repo: PathBuf,
     base: String,
     patch: String,
+    signature: String,
     token: String,
     threads: Vec<Thread>,
     state: Value,
@@ -104,7 +109,19 @@ fn new_token() -> String {
 }
 
 fn home() -> PathBuf {
-    PathBuf::from(env::var("HOME").unwrap_or_else(|_| ".".into()))
+    for key in ["HOME", "USERPROFILE"] {
+        if let Some(value) = env::var_os(key) {
+            let path = PathBuf::from(value);
+            if path.is_absolute() { return path; }
+        }
+    }
+    if cfg!(windows) {
+        if let (Some(drive), Some(path)) = (env::var_os("HOMEDRIVE"), env::var_os("HOMEPATH")) {
+            let path = PathBuf::from(format!("{}{}", drive.to_string_lossy(), path.to_string_lossy()));
+            if path.is_absolute() { return path; }
+        }
+    }
+    env::temp_dir()
 }
 
 fn git(repo: &FsPath, args: &[&str]) -> Result<String, String> {
@@ -407,6 +424,7 @@ fn load_threads(repo: &FsPath) -> Vec<Thread> {
             serde_json::from_value(value).unwrap_or_default()
         }
     } else {
+        log(format!("could not parse {}", threads_path(repo).display()));
         Vec::new()
     };
     let mut seen = HashSet::new();
@@ -423,9 +441,16 @@ fn load_threads(repo: &FsPath) -> Vec<Thread> {
 
 fn save_threads(repo: &FsPath, threads: &[Thread]) {
     let path = threads_path(repo);
-    if let Some(parent) = path.parent() { let _ = fs::create_dir_all(parent); }
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            log(format!("could not create {}: {error}", parent.display()));
+            return;
+        }
+    }
     let payload = json!({ "repo": repo.to_string_lossy(), "threads": threads });
-    let _ = fs::write(path, serde_json::to_string_pretty(&payload).unwrap_or_default());
+    if let Err(error) = fs::write(&path, serde_json::to_string_pretty(&payload).unwrap_or_default()) {
+        log(format!("could not write {}: {error}", path.display()));
+    }
 }
 
 fn reanchor(repo: &FsPath, threads: &mut [Thread]) {
@@ -470,8 +495,16 @@ fn read_registry() -> HashMap<String, Value> {
 }
 
 fn write_registry(registry: &HashMap<String, Value>) {
-    if let Some(parent) = registry_path().parent() { let _ = fs::create_dir_all(parent); }
-    let _ = fs::write(registry_path(), serde_json::to_string_pretty(registry).unwrap_or_default());
+    let path = registry_path();
+    if let Some(parent) = path.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            log(format!("could not create {}: {error}", parent.display()));
+            return;
+        }
+    }
+    if let Err(error) = fs::write(&path, serde_json::to_string_pretty(registry).unwrap_or_default()) {
+        log(format!("could not write {}: {error}", path.display()));
+    }
 }
 
 fn find_daemon(repo: &FsPath) -> Option<Value> {
@@ -526,6 +559,64 @@ fn file_stamps(repo: &FsPath, patch: &str) -> Vec<(PathBuf, SystemTime, u64)> {
     }).collect()
 }
 
+fn repo_signature(repo: &FsPath, base: &str) -> String {
+    let head = git(repo, &["rev-parse", "--verify", "--quiet", "HEAD"]).unwrap_or_default();
+    let base_commit = git(repo, &["rev-parse", "--verify", "--quiet", &format!("{base}^{{commit}}")])
+        .unwrap_or_default();
+    let status = git(repo, &["status", "--porcelain=v1", "-z", "--untracked-files=all"]).unwrap_or_default();
+    format!("{base}\0{base_commit}\0{head}\0{status}")
+}
+
+fn signature_reason(previous: &str, current: &str) -> &'static str {
+    let old: Vec<&str> = previous.split('\0').collect();
+    let new: Vec<&str> = current.split('\0').collect();
+    if old.get(0) != new.get(0) { "base changed" }
+    else if old.get(1) != new.get(1) { "base moved" }
+    else if old.get(2) != new.get(2) { "HEAD changed" }
+    else if old.get(3) != new.get(3) { "working tree changed" }
+    else { "file changed" }
+}
+
+fn rebuild_state(app: &mut App) {
+    let signature = repo_signature(&app.repo, &app.base);
+    app.patch = build_patch(&app.repo, &app.base);
+    let (state, stamps) = derive_state(&app.repo, &app.patch, &app.base);
+    app.state = state;
+    app.stamps = stamps;
+    app.signature = signature;
+}
+
+fn refresh_state(app: &mut App) -> bool {
+    let signature = repo_signature(&app.repo, &app.base);
+    let file_changed = file_stamps(&app.repo, &app.patch) != app.stamps;
+    if signature == app.signature && !file_changed {
+        return false;
+    }
+    let reason = if signature == app.signature { "file changed" } else { signature_reason(&app.signature, &signature) };
+    rebuild_state(app);
+    let stats = &app.state["stats"];
+    log(format!(
+        "{reason} · {} file(s) (+{} -{})",
+        stats["files"].as_u64().unwrap_or(0),
+        stats["additions"].as_u64().unwrap_or(0),
+        stats["deletions"].as_u64().unwrap_or(0),
+    ));
+    true
+}
+
+fn watch_repo(app: Arc<Mutex<App>>) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+            let changed = {
+                let mut app = app.lock().unwrap();
+                refresh_state(&mut app)
+            };
+            if changed { emit("{\"type\":\"diff\"}"); }
+        }
+    });
+}
+
 fn derive_state(repo: &FsPath, patch: &str, base: &str) -> (Value, Vec<(PathBuf, SystemTime, u64)>) {
     let paths = changed_paths(patch);
     let scopes = collect_scopes(repo, patch, &paths);
@@ -552,11 +643,7 @@ fn sync_threads(app: &mut App) -> Vec<Thread> {
 }
 
 fn state_response(app: &mut App) -> Value {
-    if file_stamps(&app.repo, &app.patch) != app.stamps {
-        let (state, stamps) = derive_state(&app.repo, &app.patch, &app.base);
-        app.state = state;
-        app.stamps = stamps;
-    }
+    refresh_state(app);
     let threads = sync_threads(app);
     let mut state = app.state.clone();
     state["threads"] = json!(threads);
@@ -598,13 +685,18 @@ async fn api_base(State(state): State<Arc<Mutex<App>>>, headers: HeaderMap, Json
     let mut app = state.lock().unwrap();
     let base = body.get("base").and_then(Value::as_str).unwrap_or("HEAD").to_string();
     if git(&app.repo, &["rev-parse", "--verify", "--quiet", &format!("{base}^{{commit}}")]).is_err() {
+        log(format!("base {base} rejected: unknown ref"));
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown ref {base}") }))).into_response();
     }
     app.base = base.clone();
-    app.patch = build_patch(&app.repo, &base);
-    let (state, stamps) = derive_state(&app.repo, &app.patch, &app.base);
-    app.state = state;
-    app.stamps = stamps;
+    rebuild_state(&mut app);
+    let stats = &app.state["stats"];
+    log(format!(
+        "base -> {base} · {} file(s) (+{} -{})",
+        stats["files"].as_u64().unwrap_or(0),
+        stats["additions"].as_u64().unwrap_or(0),
+        stats["deletions"].as_u64().unwrap_or(0),
+    ));
     let mut registry = read_registry();
     if let Some(entry) = registry.get_mut(&app.repo.to_string_lossy().to_string()) {
         entry["base"] = json!(base);
@@ -631,6 +723,7 @@ fn add_thread(app: &mut App, body: &Value, author: &str) -> Thread {
     };
     app.threads.push(thread.clone());
     save_threads(&repo, &app.threads);
+    log(format!("comment added {}:{} by {author}", thread.path, thread.line));
     emit("{\"type\":\"threads\"}");
     thread
 }
@@ -694,6 +787,7 @@ async fn thread_action_inner(
         _ => return StatusCode::NOT_FOUND.into_response(),
     }
     thread.updated_at = now();
+    log(format!("{action} {}:{} -> {} [{author}]", thread.path, thread.line, thread.status));
     let result = thread.clone();
     save_threads(&app.repo, &app.threads);
     emit("{\"type\":\"threads\"}");
@@ -906,10 +1000,13 @@ async fn main() {
             let base = flag(&rest, "base").unwrap_or_else(|| "HEAD".into());
             let port = flag(&rest, "port").and_then(|p| p.parse::<u16>().ok()).unwrap_or(0);
             let token = new_token();
+            let signature = repo_signature(&repo, &base);
             let patch = build_patch(&repo, &base);
             let threads = load_threads(&repo);
             let (state, stamps) = derive_state(&repo, &patch, &base);
-            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, token: token.clone(), threads, state, stamps }));
+            log(format!("watching {} · base {base} · {} file(s)", repo.display(), changed_paths(&patch).len()));
+            log(format!("state {}", threads_path(&repo).display()));
+            let app = Arc::new(Mutex::new(App { repo: repo.clone(), base: base.clone(), patch, signature, token: token.clone(), threads, state, stamps }));
             let _ = EVENTS.set(tokio::sync::broadcast::channel(32).0);
             let router = Router::new()
                 .route("/", get(index))
@@ -924,7 +1021,8 @@ async fn main() {
                 .route("/ctl/threads", axum::routing::get(ctl_threads).post(ctl_threads))
                 .route("/ctl/threads/{id}/{action}", post(ctl_thread_action))
                 .route("/ctl/status", get(ctl_status))
-                .with_state(app);
+                .with_state(app.clone());
+            watch_repo(app.clone());
             let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await.unwrap();
             let bound = listener.local_addr().unwrap().port();
             let mut registry = read_registry();

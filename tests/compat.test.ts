@@ -66,9 +66,41 @@ async function post(port: number, path: string, body: unknown) {
     body: JSON.stringify(body),
   });
 }
+async function diffAfter(port: number, action: () => void): Promise<boolean> {
+  const controller = new AbortController();
+  const response = await fetch(`http://127.0.0.1:${port}/api/events`, { signal: controller.signal });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const read = (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return false;
+        buffer += decoder.decode(value);
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          if (JSON.parse(line.slice(6)).type === "diff") return true;
+        }
+      }
+    } catch {
+      return false;
+    }
+  })();
+  action();
+  const found = await Promise.race([
+    read,
+    new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5000)),
+  ]);
+  controller.abort();
+  return found;
+}
 function norm(value: any): any {
   if (typeof value === "string") {
     return value
+      .split(ROOT.replace(/\/$/, "")).join("<ROOT>")
       .replace(/\b[0-9a-f]{8,16}\b/g, "<id>")
       .replace(/\d{4}-\d{2}-\d{2}T[\d:.]+Z/g, "<time>")
       .replace(/\d{13,}/g, "<time>")
@@ -241,4 +273,55 @@ test("thread ids are unique and a send only changes its own thread", async () =>
   const list = await (await fetch(`http://127.0.0.1:${PORTS.main}/api/threads`)).json() as { id: string; status: string }[];
   expect(list.find((thread) => thread.id === first.id)?.status).toBe("sent");
   expect(list.find((thread) => thread.id === second.id)?.status).toBe("open");
+});
+
+test("branch switches and new files refresh the diff", async () => {
+  const repo = join(TMP, "branch-repo");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  writeFileSync(join(repo, "src/main.ts"), "export const main = 1;\n");
+  sh("git init -q -b main && git config user.email t@t && git config user.name T && git add . && git commit -qm init", repo);
+  sh("git checkout -q -b feature", repo);
+  writeFileSync(join(repo, "src/main.ts"), "export const main = 2;\n");
+  writeFileSync(join(repo, "src/only.ts"), "export const only = true;\n");
+  sh("git add . && git commit -qm feature && git checkout -q main", repo);
+  const port = await freePort();
+  await start(repo, port, "main");
+  expect((await state(port)).stats.files).toBe(0);
+
+  expect(await diffAfter(port, () => sh("git checkout -q feature", repo))).toBe(true);
+  const switched = await state(port);
+  expect(switched.stats.files).toBe(2);
+  expect(switched.patch).toContain("export const only = true;");
+
+  sh("git checkout -q main", repo);
+  writeFileSync(join(repo, "src/extra.ts"), "export const extra = true;\n");
+  const added = await state(port);
+  expect(added.stats.files).toBe(1);
+  expect(added.patch).toContain("export const extra = true;");
+});
+
+test("state stays out of the repository when HOME is unset", async () => {
+  const repo = join(TMP, "home-repo");
+  const tmp = join(TMP, "tmp-home");
+  mkdirSync(join(repo, "src"), { recursive: true });
+  mkdirSync(tmp, { recursive: true });
+  writeFileSync(join(repo, "src/a.ts"), "export const a = 1;\n");
+  sh("git init -q -b main && git config user.email t@t && git config user.name T && git add . && git commit -qm init", repo);
+  writeFileSync(join(repo, "src/a.ts"), "export const a = 2;\n");
+  const env: Record<string, string | undefined> = { ...process.env, TMPDIR: tmp, TEMP: tmp, TMP: tmp };
+  for (const key of ["HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH"]) delete env[key];
+  const port = await freePort();
+  const proc = Bun.spawn([BIN, "--repo", repo, "--port", String(port), "--no-open"], {
+    env, stdout: "ignore", stderr: "ignore",
+  });
+  servers.push(proc);
+  for (let i = 0; i < 60; i++) {
+    try {
+      if ((await fetch(`http://127.0.0.1:${port}/api/state`)).ok) break;
+    } catch {}
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  expect((await state(port)).stats.files).toBe(1);
+  expect(readdirSync(repo).filter((name) => [".config", ".cache", ".local"].includes(name))).toEqual([]);
+  expect(readFileSync(join(tmp, ".config/diffloop/daemons.json"), "utf8")).toContain(repo);
 });

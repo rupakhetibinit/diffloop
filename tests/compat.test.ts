@@ -165,24 +165,24 @@ afterAll(() => {
   for (const proc of servers) proc.kill();
 });
 
-test("version and help match frozen Bun output", () => {
+test("version and help match the frozen fixtures", () => {
   expect(norm(run(["--version"], REPO).out)).toBe(FIXTURES.version);
   expect(norm(run(["--help"], REPO).out)).toBe(FIXTURES.help);
 });
 
-test("state patch and stats match frozen Bun output", async () => {
+test("state patch and stats match the frozen fixtures", async () => {
   expect(norm(await state(PORTS.main))).toEqual(norm(FIXTURES.stateHead));
   expect(norm(await state(PORTS.base))).toEqual(norm(FIXTURES.stateDevelop));
 });
 
-test("branches and invalid base match frozen Bun output", async () => {
+test("branches and invalid base match the frozen fixtures", async () => {
   const branches = await (await fetch(`http://127.0.0.1:${PORTS.main}/api/branches`)).json();
   expect(norm(branches)).toEqual(norm(FIXTURES.branches));
   const invalid = await (await post(PORTS.main, "/api/base", { base: "no-such-ref" })).json();
   expect(norm(invalid)).toEqual(norm(FIXTURES.invalidBase));
 });
 
-test("comment lifecycle matches frozen Bun output", async () => {
+test("comment lifecycle matches the frozen fixtures", async () => {
   const add = run(["comment", "add", "--path", "src/app.ts", "--line", "2", "--body", "reset sum"], REPO);
   expect(norm(add.out)).toBe(FIXTURES.addOut);
   let thread = (await state(PORTS.main)).threads[0];
@@ -203,14 +203,14 @@ test("comment lifecycle matches frozen Bun output", async () => {
   expect(norm((await state(PORTS.main)).threads[0])).toEqual(norm(FIXTURES.afterDismiss));
 });
 
-test("multi-repo routing matches frozen Bun output", async () => {
+test("multi-repo routing matches the frozen fixtures", async () => {
   const add = run(["comment", "add", "--path", "src/other.ts", "--line", "1", "--body", "second repo"], REPO2);
   expect(norm(add.out)).toBe(FIXTURES.addSecondOut);
   expect(norm(JSON.parse(run(["comments", "--json"], REPO2).out))).toEqual(norm(JSON.parse(FIXTURES.commentsSecond)));
   expect(norm(JSON.parse(run(["comments", "--json"], REPO).out))).toEqual(norm(JSON.parse(FIXTURES.commentsFirst)));
 });
 
-test("sessions, grammars, upgrade check, and validation match frozen Bun output", () => {
+test("sessions, grammars, upgrade check, and validation match the frozen fixtures", () => {
   const sessions = (text: string) => norm(text).split("\n").filter(Boolean).sort().join("\n");
   expect(sessions(run(["sessions"], REPO).out)).toBe(sessions(FIXTURES.sessions));
   expect(norm(run(["grammars"], REPO).out)).toBe(FIXTURES.grammars);

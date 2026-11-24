@@ -24,6 +24,7 @@ use tokio_stream::wrappers::BroadcastStream;
 const INDEX: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
 const APP_CSS: &str = include_str!("../assets/app.css");
+const FAVICON: &str = include_str!("../assets/favicon.svg");
 const VERSION: &str = "0.2.5";
 const REPO: &str = "rupakhetibinit/diffloop";
 
@@ -657,6 +658,9 @@ async fn app_js() -> Response {
 async fn app_css() -> Response {
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], APP_CSS).into_response()
 }
+async fn favicon() -> Response {
+    ([(header::CONTENT_TYPE, "image/svg+xml; charset=utf-8")], FAVICON).into_response()
+}
 
 async fn api_state(State(state): State<Arc<Mutex<App>>>) -> Json<Value> {
     let mut app = state.lock().unwrap();
@@ -1114,6 +1118,7 @@ async fn main() {
                 .route("/", get(index))
                 .route("/app.js", get(app_js))
                 .route("/app.css", get(app_css))
+                .route("/favicon.svg", get(favicon))
                 .route("/api/state", get(api_state))
                 .route("/api/events", get(api_events))
                 .route("/api/branches", get(api_branches))

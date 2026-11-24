@@ -101,18 +101,15 @@ to a change that only two participants need to see. diffloop keeps the review
 local, keeps every thread attached to its code, and gives the agent a CLI
 instead of a copy-paste relay.
 
-The server is Rust with Axum and native tree-sitter grammars. The interface is
-React with [@pierre/diffs](https://github.com/pierrecomputer/pierre). The
-release binary is about 25 MB, versus 123 MB for the previous Bun build.
+diffloop is one Rust binary: Axum serves the local app, native tree-sitter
+grammars handle diff context, and the React interface with
+[@pierre/diffs](https://github.com/pierrecomputer/pierre) is embedded at compile
+time. The release binary is about 25 MB.
 
 ## Development
 
-```sh
-bun install
-bun run bundle:web                    # rebuild embedded frontend assets
-cd rust && cargo build --release
-cd .. && bun run test:compat          # frozen compatibility suite
-```
+The frontend is bundled into the Rust binary at build time. Build instructions
+and the compatibility suite live in [rust/README.md](rust/README.md).
 
 CI builds all five platform targets, runs the compatibility suite, and attaches
 binaries to GitHub releases under the names the install scripts expect.

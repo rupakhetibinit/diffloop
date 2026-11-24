@@ -89,6 +89,23 @@ function sendButtonLabel(status: Status) {
   return { label: "Send to agent", disabled: false, sent: false };
 }
 
+function repoLabel(repo: string) {
+  const name = repo.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  return name || "diffloop";
+}
+
+function tabTitle(data: State | null, activePath: string | null) {
+  if (!data) return "diffloop · local diff review";
+  const repo = data.base === "HEAD" ? repoLabel(data.repo) : `${repoLabel(data.repo)} @ ${data.base}`;
+  const parts = [repo];
+  if (activePath) parts.push(activePath);
+  const active = data.threads.filter((thread) => (
+    thread.status === "open" || thread.status === "sent" || thread.status === "stale"
+  )).length;
+  if (active) parts.push(`${active} active`);
+  return `${parts.join(" · ")} · diffloop`;
+}
+
 interface ReviewContextValue {
   threads: Thread[];
   draft: Draft | null;
@@ -462,6 +479,10 @@ function App() {
     return ordered.length === parsed.length ? ordered : parsed;
   }, [data?.patch]);
   const fileDiffs = useMemo(() => new Map(files.map((file) => [file.name, file])), [files]);
+  const activePath = draft?.path ?? (selectedFile && fileDiffs.has(selectedFile) ? selectedFile : null);
+  useEffect(() => {
+    document.title = tabTitle(data, activePath);
+  }, [data, activePath]);
   const allDirs = useMemo(() => {
     const dirs = new Set<string>();
     for (const file of files) {
@@ -596,7 +617,7 @@ function App() {
   return (
     <ReviewContext.Provider value={reviewValue}>
       <header id="topbar">
-        <div className="logo" title="diffloop">✚</div>
+        <img className="logo" src="/favicon.svg" alt="diffloop" />
         <Input className="source" readOnly value={data?.repo ?? ""} aria-label="Repository" />
         <Select
           items={[...baseRefs, "__custom__"]}

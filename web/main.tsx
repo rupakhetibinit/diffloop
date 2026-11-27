@@ -271,6 +271,18 @@ function DiffScrollbar({ sectionRef, revision, layout }: {
   const blocks = useRef<HTMLElement[]>([]);
   const bound = useRef(new WeakSet<HTMLElement>());
   const maxScrollRef = useRef(0);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const applyHorizontal = useCallback((value: number) => {
+    setPosition(value);
+    const ordered = [...blocks.current].sort(
+      (a, b) => (b.scrollWidth - b.clientWidth) - (a.scrollWidth - a.clientWidth),
+    );
+    for (const block of ordered) {
+      const limit = block.scrollWidth - block.clientWidth;
+      if (limit > 0) block.scrollLeft = Math.min(value, limit);
+    }
+  }, []);
 
   const syncFromScroll = useCallback((event: Event) => {
     const target = event.target as HTMLElement | null;
@@ -330,19 +342,35 @@ function DiffScrollbar({ sectionRef, revision, layout }: {
     };
   }, [measure, revision, layout]);
 
+  // A focused or hovered range input swallows wheel events, so forward them to
+  // the diff instead of letting scrolling stall when the pointer is on the bar.
+  useEffect(() => {
+    const input = inputRef.current;
+    const section = sectionRef.current;
+    if (!input || !section) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey) return;
+      const root = section.firstElementChild as HTMLElement | null;
+      if (!root) return;
+      const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? section.clientHeight : 1;
+      const deltaX = event.deltaX * scale;
+      const deltaY = event.deltaY * scale;
+      if (Math.abs(deltaX) > Math.abs(deltaY)) {
+        const next = Math.min(maxScrollRef.current, Math.max(0, Number(input.value) + deltaX));
+        applyHorizontal(next);
+      } else {
+        root.scrollTop += deltaY;
+      }
+      event.preventDefault();
+    };
+    input.addEventListener("wheel", onWheel, { passive: false });
+    return () => input.removeEventListener("wheel", onWheel);
+  }, [sectionRef, applyHorizontal, visible]);
+
   if (!visible) return null;
-  const apply = (value: number) => {
-    setPosition(value);
-    const ordered = [...blocks.current].sort(
-      (a, b) => (b.scrollWidth - b.clientWidth) - (a.scrollWidth - a.clientWidth),
-    );
-    for (const block of ordered) {
-      const limit = block.scrollWidth - block.clientWidth;
-      if (limit > 0) block.scrollLeft = Math.min(value, limit);
-    }
-  };
   return (
     <input
+      ref={inputRef}
       type="range"
       className="diff-hscroll"
       min={0}
@@ -351,7 +379,7 @@ function DiffScrollbar({ sectionRef, revision, layout }: {
       value={position}
       aria-label="Scroll diff horizontally"
       style={{ "--thumb-width": `${thumbWidth}px` } as React.CSSProperties}
-      onChange={(event) => apply(Number(event.currentTarget.value))}
+      onChange={(event) => applyHorizontal(Number(event.currentTarget.value))}
     />
   );
 }
